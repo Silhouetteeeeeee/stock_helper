@@ -91,3 +91,6 @@ DEFAULT_WATCHLIST: list[WatchItem] = [
 
 # 顶部展示的大盘指数
 INDEX_NAMES: tuple[str, ...] = ("上证指数", "深证成指", "创业板指")
+
+# 指数面板每个单元格的固定宽度（像素），横向超出后可滚动
+INDEX_CELL_WIDTH = 90

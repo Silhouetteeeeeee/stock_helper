@@ -152,6 +152,24 @@ def build_stylesheet() -> str:
         background: none;
         height: 0px;
     }}
+    QScrollBar:horizontal {{
+        background: transparent;
+        height: 6px;
+        margin: 0px;
+    }}
+    QScrollBar::handle:horizontal {{
+        background: {PALETTE.border};
+        border-radius: 3px;
+        min-width: 24px;
+    }}
+    QScrollBar::handle:horizontal:hover {{
+        background: {PALETTE.text_muted};
+    }}
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
+    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+        background: none;
+        width: 0px;
+    }}
     QToolTip {{
         background-color: {PALETTE.surface_alt};
         border: 1px solid {PALETTE.border};

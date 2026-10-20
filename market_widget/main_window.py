@@ -77,19 +77,19 @@ class MarketWidget(QWidget):
         self.setFixedWidth(WINDOW_WIDTH)
         self.setStyleSheet(build_stylesheet())
 
-        self._locked_minimized = START_MINIMIZED
-        self._hover_expanded = False
-        self._card = QFrame(self)
+        self._locked_minimized = START_MINIMIZED   # 锁定迷你态：只保留标题栏
+        self._hover_expanded = False                # 当前是否因悬停而完整展开
+        self._card = QFrame(self)                  # 卡片容器（承载标题栏 + 主体）
         self._card.setObjectName("Card")
         self._build_ui()
 
         # 悬停防抖定时器
-        self._hover_collapse_timer = QTimer(self)
+        self._hover_collapse_timer = QTimer(self)     # 鼠标移出后延迟多少毫秒再收起（防抖）
         self._hover_collapse_timer.setSingleShot(True)
         self._hover_collapse_timer.setInterval(HOVER_COLLAPSE_DELAY_MS)
         self._hover_collapse_timer.timeout.connect(self._collapse_on_hover_timeout)
 
-        self._hover_expand_timer = QTimer(self)
+        self._hover_expand_timer = QTimer(self)        # 鼠标移入后延迟多少毫秒再展开（0 = 立即）
         self._hover_expand_timer.setSingleShot(True)
         self._hover_expand_timer.setInterval(HOVER_EXPAND_DELAY_MS)
         self._hover_expand_timer.timeout.connect(self._expand_on_hover_timeout)
@@ -97,7 +97,7 @@ class MarketWidget(QWidget):
         self._apply_mode_visibilities()
         self._apply_geometry()
 
-        self._refresh_timer = QTimer(self)
+        self._refresh_timer = QTimer(self)             # 自动刷新定时器（由数据输入面板控制启停）
         self._refresh_timer.timeout.connect(self.data_requested.emit)
 
     # ------------------------------------------------------------------
@@ -108,34 +108,33 @@ class MarketWidget(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(self._card)
 
-        self._card_layout = QVBoxLayout(self._card)
+        self._card_layout = QVBoxLayout(self._card)        # 卡片内部布局，包含 titlebar / mini_row / body
         self._card_layout.setContentsMargins(0, 0, 0, 0)
         self._card_layout.setSpacing(0)
 
-        self._titlebar = TitleBar(WINDOW_TITLE, pinned=ALWAYS_ON_TOP, parent=self._card)
+        self._titlebar = TitleBar(WINDOW_TITLE, parent=self._card)  # 顶部栏（拖动 / 收起 / 关闭）
         self._titlebar.minimize_clicked.connect(self.toggle_minimized)
         self._titlebar.close_clicked.connect(self.close)
-        self._titlebar.pin_toggled.connect(self.set_always_on_top)
 
         # 迷你态单行（标题栏下方，只显示一只指数）
-        self._mini_row = self._build_mini_row(self._card)
+        self._mini_row = self._build_mini_row(self._card)  # 迷你态单行容器
 
         # 可折叠主体
-        self._body = QWidget(self._card)
+        self._body = QWidget(self._card)                  # 完整主体（指数面板 + 自选股 + 数据输入）
         body_layout = QVBoxLayout(self._body)
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(0)
 
-        self._index_panel = IndexPanel(INDEX_NAMES, self._body)
+        self._index_panel = IndexPanel(INDEX_NAMES, self._body)  # 大盘指数三列面板
         body_layout.addWidget(self._index_panel)
         body_layout.addWidget(self._divider(self._body))
         body_layout.addWidget(self._section_title("自选股", self._body))
-        self._watchlist = WatchListPanel(DEFAULT_WATCHLIST, self._body)
+        self._watchlist = WatchListPanel(DEFAULT_WATCHLIST, self._body)  # 自选股列表
         self._watchlist.item_double_clicked.connect(self._on_item_activated)
         self._watchlist.layout_changed.connect(self._schedule_refit)
         body_layout.addWidget(self._watchlist, 1)
         body_layout.addWidget(self._divider(self._body))
-        self._input_panel = InputPanel(parent=self._body)
+        self._input_panel = InputPanel(parent=self._body)  # 数据输入面板（批量粘贴 / 增删自选 / 自动刷新）
         self._input_panel.quotes_submitted.connect(self.push_quotes)
         self._input_panel.item_added.connect(self.add_watch_item)
         self._input_panel.item_removed.connect(self.remove_watch_item)
@@ -303,12 +302,6 @@ class MarketWidget(QWidget):
     # ------------------------------------------------------------------
     # 窗口行为
     # ------------------------------------------------------------------
-    def set_always_on_top(self, pinned: bool) -> None:
-        flags = self.windowFlags()
-        flags = (flags | Qt.WindowStaysOnTopHint) if pinned else (flags & ~Qt.WindowStaysOnTopHint)
-        self.setWindowFlags(flags)
-        self.show()
-
     def toggle_minimized(self) -> None:
         """切换锁定迷你态：点击 "—" 锁定，再次点击解锁回到迷你行/悬停模式。"""
         self._locked_minimized = not self._locked_minimized
