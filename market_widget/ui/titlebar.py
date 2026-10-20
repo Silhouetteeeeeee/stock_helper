@@ -63,8 +63,14 @@ class TitleBar(QWidget):
         self._live_dot.setToolTip(tip)
 
     def set_minimized(self, minimized: bool) -> None:
-        """收起时隐藏置顶按钮，只保留展开与关闭。"""
+        """锁定迷你态时隐藏置顶按钮，并把收起按钮改成「展开」。"""
         self._pin_button.setVisible(not minimized)
+        if minimized:
+            self._min_button.setText("▾")
+            self._min_button.setToolTip("展开")
+        else:
+            self._min_button.setText("—")
+            self._min_button.setToolTip("锁定迷你")
 
     @property
     def pinned(self) -> bool:

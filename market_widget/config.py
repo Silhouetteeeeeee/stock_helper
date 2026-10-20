@@ -15,8 +15,11 @@ WINDOW_MARGIN_X = 12        # 距屏幕右边缘的距离
 WINDOW_MARGIN_Y = 12        # 距屏幕顶部的距离
 ALWAYS_ON_TOP = True        # 始终置顶
 START_MINIMIZED = False     # 启动时是否直接收起为小标题栏
-MINIMIZED_HEIGHT = 34       # 收起状态下的高度（与标题栏等高）
-OPACITY = 0.96              # 窗口不透明度（0.5 ~ 1.0）
+MINIMIZED_HEIGHT = 34       # 纯标题栏高度（锁定迷你态的最小高度）
+MINI_MODE_ROW_HEIGHT = 42   # 迷你态指数单行的高度
+HOVER_EXPAND_DELAY_MS = 0   # 鼠标移入后延迟多少毫秒展开（0 = 立即）
+HOVER_COLLAPSE_DELAY_MS = 200  # 鼠标移出后延迟多少毫秒收回（防抖）
+OPACITY = 0.7              # 窗口不透明度（0.5 ~ 1.0）
 CORNER_RADIUS = 12          # 圆角半径
 
 # ---------------------------------------------------------------------------
