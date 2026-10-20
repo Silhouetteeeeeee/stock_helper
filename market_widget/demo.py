@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import random
+import signal
 import sys
 
 from PySide6.QtWidgets import QApplication
@@ -33,6 +34,9 @@ class DemoFeed:
 
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
+    # Qt 在 Windows 上会吞掉 Ctrl+C，这里恢复默认的 SIGINT 行为让其正常退出。
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
     window = MarketWidget()
     window.show()
 
