@@ -297,6 +297,9 @@ class MarketWidget(QWidget):
         if self.underMouse():
             return
         self._hover_expanded = False
+        print("鼠标是否仍在窗口内：", self.underMouse())
+        print("完整展开状态：", self._hover_expanded)
+        print("收起前窗口高度：", self.height())
         self._apply_mode_visibilities()
 
     # ------------------------------------------------------------------
@@ -315,40 +318,56 @@ class MarketWidget(QWidget):
         super().showEvent(event)
         self._apply_geometry()
 
-    def _schedule_refit(self) -> None:
-        """把重新适配高度推迟到本轮布局完成后执行，否则拿到的是旧的高度提示。"""
+    def _schedule_refit(self):
+        print("[调用 _schedule_refit 前]")
+        # 只有完整展开时，才根据内容重新计算窗口高度。
+        # 收起状态下，不允许输入面板的布局变化触发重新撑高窗口。
+        if self._locked_minimized or not self._hover_expanded:
+            return
+
         QTimer.singleShot(0, self._apply_geometry)
 
-    def _apply_geometry(self) -> None:
-        """限制高度不超出屏幕可用区域，并把窗口贴到右上角。"""
-        screen = QGuiApplication.primaryScreen()
+    def _apply_geometry(self):
+        screen = self.screen() or QGuiApplication.primaryScreen()
         if screen is None:
             return
+
         area = screen.availableGeometry()
 
         if self._locked_minimized:
-            minimum_height = MINIMIZED_HEIGHT
-            maximum_height = MINIMIZED_HEIGHT
-            should_fit = False
-        elif self._hover_expanded:
-            minimum_height = MINIMIZED_HEIGHT
-            maximum_height = max(MINIMIZED_HEIGHT, area.height() - 2 * WINDOW_MARGIN_Y)
-            should_fit = True
-        else:
-            # 迷你行模式：高度固定为 titlebar + mini_row
-            minimum_height = MINIMIZED_HEIGHT + MINI_MODE_ROW_HEIGHT
-            maximum_height = minimum_height
-            should_fit = False
+            # 锁定迷你模式：只显示标题栏
+            target_height = MINIMIZED_HEIGHT
+            self.setFixedHeight(target_height)
 
-        self.setMinimumHeight(minimum_height)
-        self.setMaximumHeight(maximum_height)
-        if should_fit:
+        elif not self._hover_expanded:
+            # 普通迷你模式：标题栏 + 指数迷你行
+            target_height = MINIMIZED_HEIGHT + MINI_MODE_ROW_HEIGHT
+            self.setFixedHeight(target_height)
+
+        else:
+            # 完整展开模式：解除固定高度限制
+            self.setMinimumHeight(MINIMIZED_HEIGHT)
+            self.setMaximumHeight(
+                max(MINIMIZED_HEIGHT, area.height() - 2 * WINDOW_MARGIN_Y)
+            )
+
+            self._card_layout.invalidate()
+            self._card_layout.activate()
+
+            if self._body.layout() is not None:
+                self._body.layout().invalidate()
+                self._body.layout().activate()
+
+            self._card.adjustSize()
             self._fit_height()
 
         x = area.right() - self.width() - WINDOW_MARGIN_X
-        self.move(max(area.left(), x), area.top() + WINDOW_MARGIN_Y)
+        y = area.top() + WINDOW_MARGIN_Y
+        self.move(max(area.left(), x), y)
+
 
     def _fit_height(self) -> None:
+        print("\n[调用 _fit_height]")
         """按内容高度调整窗口。"""
         for _ in range(3):
             self._card_layout.activate()
@@ -357,6 +376,22 @@ class MarketWidget(QWidget):
 
     def _on_item_activated(self, code: str) -> None:
         self.item_activated.emit(code)
+
+    def resizeEvent(self, event):
+        old_size = event.oldSize()
+        new_size = event.size()
+
+        print(
+            f"[resizeEvent] "
+            f"{old_size.width()}x{old_size.height()} -> "
+            f"{new_size.width()}x{new_size.height()}, "
+            f"locked={self._locked_minimized}, "
+            f"expanded={self._hover_expanded}, "
+            f"minH={self.minimumHeight()}, "
+            f"maxH={self.maximumHeight()}"
+        )
+
+        super().resizeEvent(event)
 
 
 if __name__ == "__main__":
