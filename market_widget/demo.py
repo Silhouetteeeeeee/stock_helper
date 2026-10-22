@@ -11,7 +11,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from stock.utils import get_index_info, get_sina_current_stock_info_list, is_trading_time
+from stock.utils import get_sina_current_stock_info_list, is_trading_time
 from common.stock import *
 from .main_window import MarketWidget
 
