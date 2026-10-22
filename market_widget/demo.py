@@ -36,7 +36,7 @@ class DemoFeed:
             print("当前非交易时间")
             return
         print("刷新数据")
-        tmp = INDEX_CODES
+        tmp = INDEX_CODES.copy()
         tmp.extend([item.code for item in self._window.watchlist_items()])
         quotes = get_sina_current_stock_info_list(tmp)
         self._window.push_quotes(quotes)
