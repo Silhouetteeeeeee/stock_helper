@@ -18,8 +18,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-from ..config import Quote, WatchItem
+from common.stock import *
+from ..config import WatchItem
 from ..theme import PALETTE, ui_font
 
 PLACEHOLDER = (

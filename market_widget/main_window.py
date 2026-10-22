@@ -26,6 +26,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from common.stock import *
+
 from .config import (
     ALWAYS_ON_TOP,
     DEFAULT_WATCHLIST,
@@ -39,7 +41,6 @@ from .config import (
     WINDOW_MARGIN_X,
     WINDOW_MARGIN_Y,
     WINDOW_WIDTH,
-    Quote,
     WatchItem,
 )
 from .theme import (

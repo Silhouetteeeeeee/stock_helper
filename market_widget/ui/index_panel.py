@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QObject, QEvent
 from PySide6.QtWidgets import QGridLayout, QLabel, QVBoxLayout, QWidget, QHBoxLayout, QScrollArea, QSizePolicy
 
-from ..config import Quote
+from common.stock import *
 from ..theme import PALETTE, color_for_direction, format_change_pct, format_price, numeric_font, ui_font
 
 

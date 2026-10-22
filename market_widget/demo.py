@@ -6,31 +6,42 @@
 
 from __future__ import annotations
 
-import random
 import signal
 import sys
 
 from PySide6.QtWidgets import QApplication
 
-from .config import Quote
+from stock.utils import get_index_info, get_sina_current_stock_info_list, is_trading_time
+from common.stock import *
 from .main_window import MarketWidget
+
+INDEX_CODES = [
+    "sh000001",  # 上证指数
+    "sh000300",  # 沪深300
+    "sh000688",  # 科创50
+    "sz399006",  # 创业板指
+    "sh000905",  # 中证500
+    "sh000852",  # 中证1000
+]
 
 class DemoFeed:
     """仅用于演示界面效果：生成随机行情，正式接入时请替换为真实数据源。"""
 
     def __init__(self, window: MarketWidget) -> None:
         self._window = window
+        self.is_first = True
 
     def publish(self) -> None:
-        quotes = [
-            Quote("sh000001", "上证指数", 3210.45 + random.uniform(-30, 30), random.uniform(-2, 2)),
-            Quote("sz399001", "深证成指", 10120.30 + random.uniform(-80, 80), random.uniform(-2, 2)),
-            Quote("sz399006", "创业板指", 2005.80 + random.uniform(-30, 30), random.uniform(-2.5, 2.5)),
-        ]
-        for item in self._window.watchlist_items():
-            quotes.append(Quote(item.code, item.name, random.uniform(8, 200), random.uniform(-5, 5)))
+        if not self.is_first and not is_trading_time():
+            print("当前非交易时间")
+            return
+        print("刷新数据")
+        tmp = INDEX_CODES
+        tmp.extend([item.code for item in self._window.watchlist_items()])
+        quotes = get_sina_current_stock_info_list(tmp)
         self._window.push_quotes(quotes)
         self._window.set_live(False, "示例数据（未接入真实行情）")
+        self.is_first = False
 
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)

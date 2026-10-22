@@ -58,22 +58,6 @@ class Fonts:
 # 自选股数据模型（仅承载界面展示所需的字段）
 # ---------------------------------------------------------------------------
 @dataclass
-class Quote:
-    """一条行情记录。``change_pct`` 为涨跌幅（百分比数值，例如 1.23 表示 +1.23%）。"""
-
-    code: str
-    name: str
-    price: float | None = None
-    change_pct: float | None = None
-
-    @property
-    def direction(self) -> str:
-        """返回 ``"up"`` / ``"down"`` / ``"flat"``，供界面决定配色。"""
-        if self.change_pct is None or self.change_pct == 0:
-            return "flat"
-        return "up" if self.change_pct > 0 else "down"
-
-@dataclass
 class WatchItem:
     """自选股列表项：代码 + 备注名。"""
 
@@ -82,15 +66,13 @@ class WatchItem:
 
 # 默认自选股（示例，可随时替换为真实代码）
 DEFAULT_WATCHLIST: list[WatchItem] = [
-    WatchItem("sh600519", "贵州茅台"),
-    WatchItem("sz000001", "平安银行"),
-    WatchItem("sh601318", "中国平安"),
-    WatchItem("sz300750", "宁德时代"),
-    WatchItem("sh600036", "招商银行"),
+    WatchItem("605499", "东鹏饮料"),
+    WatchItem("600036", "招商银行"),
+    WatchItem("601899", "紫金矿业")
 ]
 
 # 顶部展示的大盘指数
-INDEX_NAMES: tuple[str, ...] = ("上证指数", "深证成指", "创业板指")
+INDEX_NAMES: tuple[str, ...] = ('上证指数','沪深300','科创50','创业板指','中证500','中证1000')
 
 # 指数面板每个单元格的固定宽度（像素），横向超出后可滚动
 INDEX_CELL_WIDTH = 90

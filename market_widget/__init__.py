@@ -15,9 +15,9 @@
 运行演示：``python -m market_widget.demo``
 """
 
-from .config import Quote, WatchItem
+from .config import  WatchItem
 from .main_window import MarketWidget
 
-__all__ = ["MarketWidget", "Quote", "WatchItem", "__version__"]
+__all__ = ["MarketWidget", "WatchItem", "get_index_info", "__version__"]
 
 __version__ = "1.0.0"

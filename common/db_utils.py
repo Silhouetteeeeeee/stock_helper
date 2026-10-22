@@ -1,10 +1,11 @@
 import os
 import sqlite3
+import sys
 from typing import Any, Optional, Type, TypeVar, List
 
 # ========= 路径配置（你原来的） =========
 DB_DIR = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
+    os.path.dirname(os.path.dirname(sys.argv[0])),
     "data"
 )
 os.makedirs(DB_DIR, exist_ok=True)  # 自动创建data文件夹，防止不存在报错

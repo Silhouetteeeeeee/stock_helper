@@ -11,8 +11,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-from ..config import Quote, WatchItem
+from common.stock import *
+from ..config import WatchItem
 from ..theme import PALETTE, color_for_direction, format_change_pct, format_price, numeric_font, ui_font
 
 COLUMN_HEADERS = ("名称", "现价", "涨跌幅")
