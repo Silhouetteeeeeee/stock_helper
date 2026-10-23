@@ -68,7 +68,9 @@ class WatchItem:
 DEFAULT_WATCHLIST: list[WatchItem] = [
     WatchItem("605499", "东鹏饮料"),
     WatchItem("600036", "招商银行"),
-    WatchItem("601899", "紫金矿业")
+    WatchItem("601899", "紫金矿业"),
+    WatchItem("601318", "中国平安"),
+    WatchItem("600066", "宇通客车"),
 ]
 
 # 顶部展示的大盘指数

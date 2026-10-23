@@ -100,6 +100,7 @@ class MarketWidget(QWidget):
 
         self._refresh_timer = QTimer(self)             # 自动刷新定时器（由数据输入面板控制启停）
         self._refresh_timer.timeout.connect(self.data_requested.emit)
+        self._input_panel._on_auto_toggled(True)
 
     # ------------------------------------------------------------------
     # 界面搭建
@@ -125,7 +126,6 @@ class MarketWidget(QWidget):
         body_layout = QVBoxLayout(self._body)
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(0)
-
         self._index_panel = IndexPanel(INDEX_NAMES, self._body)  # 大盘指数三列面板
         body_layout.addWidget(self._index_panel)
         body_layout.addWidget(self._divider(self._body))
@@ -142,6 +142,7 @@ class MarketWidget(QWidget):
         self._input_panel.refresh_requested.connect(self.data_requested.emit)
         self._input_panel.auto_refresh_toggled.connect(self.set_auto_refresh)
         self._input_panel.layout_changed.connect(self._schedule_refit)
+
         body_layout.addWidget(self._input_panel)
 
         self._card_layout.addWidget(self._titlebar)

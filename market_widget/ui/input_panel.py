@@ -130,6 +130,7 @@ class InputPanel(QWidget):
         refresh_row.setSpacing(6)
         self._auto = QCheckBox("自动刷新")
         self._auto.setFont(ui_font(9))
+        self._auto.setChecked(True)
         self._auto.toggled.connect(self._on_auto_toggled)
         self._interval = QSpinBox()
         self._interval.setRange(1, 600)
