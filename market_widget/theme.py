@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtGui import QFont, QFontDatabase
 
 from .config import CORNER_RADIUS, Fonts, Palette
 
 PALETTE = Palette()
 FONTS = Fonts()
+ASSETS = Path(__file__).resolve().parent / "assets"
+
+
+def _asset(name: str) -> str:
+    """返回样式表可用的资源绝对路径（统一用正斜杠）。"""
+    return (ASSETS / name).as_posix()
+
 
 def color_for_direction(direction: str) -> str:
     """按涨跌方向返回文字颜色。"""
@@ -91,8 +100,23 @@ def build_stylesheet() -> str:
         background-color: {PALETTE.hover};
         color: {PALETTE.text};
     }}
+    QPushButton#IconButton:checked {{
+        background-color: {PALETTE.hover};
+        color: {PALETTE.accent};
+    }}
+    QPushButton#IconButton:focus {{
+        outline: none;
+    }}
+    QPushButton#CloseButton {{
+        background: transparent;
+        border: none;
+        border-radius: 6px;
+        color: {PALETTE.text_muted};
+        font-size: 14px;
+        padding: 0px;
+    }}
     QPushButton#CloseButton:hover {{
-        background-color: {PALETTE.up};
+        background-color: {PALETTE.danger};
         color: #ffffff;
     }}
     QPushButton#PrimaryButton {{
@@ -126,6 +150,62 @@ def build_stylesheet() -> str:
     }}
     QLineEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus {{
         border-color: {PALETTE.accent};
+    }}
+    QCheckBox {{
+        background: transparent;
+        color: {PALETTE.text};
+        spacing: 6px;
+    }}
+    QCheckBox::indicator {{
+        width: 14px;
+        height: 14px;
+        border: 1px solid {PALETTE.border};
+        border-radius: 4px;
+        background-color: {PALETTE.surface_alt};
+    }}
+    QCheckBox::indicator:hover {{
+        border-color: {PALETTE.text_muted};
+    }}
+    QCheckBox::indicator:checked {{
+        background-color: {PALETTE.accent};
+        border-color: {PALETTE.accent};
+        image: url("{_asset('check.svg')}");
+    }}
+    QComboBox {{
+        background-color: {PALETTE.surface_alt};
+        border: 1px solid {PALETTE.border};
+        border-radius: 6px;
+        color: {PALETTE.text};
+        padding: 4px 8px;
+    }}
+    QComboBox:hover {{
+        border-color: {PALETTE.text_muted};
+    }}
+    QComboBox:focus {{
+        border-color: {PALETTE.accent};
+    }}
+    QComboBox::drop-down {{
+        border: none;
+        width: 18px;
+    }}
+    QComboBox::down-arrow {{
+        image: url("{_asset('chevron-down.svg')}");
+        width: 10px;
+        height: 6px;
+        margin-right: 6px;
+    }}
+    QComboBox QAbstractItemView {{
+        background-color: {PALETTE.surface_alt};
+        border: 1px solid {PALETTE.border};
+        border-radius: 6px;
+        color: {PALETTE.text};
+        selection-background-color: {PALETTE.hover};
+        outline: none;
+        padding: 2px;
+    }}
+    QComboBox QAbstractItemView::item {{
+        min-height: 22px;
+        padding-left: 6px;
     }}
     QScrollArea {{
         background: transparent;

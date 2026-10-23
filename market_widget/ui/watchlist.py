@@ -136,6 +136,9 @@ class WatchListPanel(QWidget):
             label = QLabel(text)
             label.setFont(ui_font(9))
             label.setStyleSheet(f"color: {PALETTE.text_muted};")
+            if column > 0:
+                # 数值列表头右对齐，和下面的价格/涨跌幅对齐
+                label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             grid.addWidget(label, 0, column)
         grid.setColumnStretch(0, 3)
         grid.setColumnStretch(1, 2)
@@ -191,7 +194,8 @@ class WatchListPanel(QWidget):
         color = color_for_direction(quote.direction)
         price.setText(format_price(quote.price))
         change.setText(format_change_pct(quote.change_pct))
-        price.setStyleSheet(f"color: {PALETTE.text};")
+        # 价格与涨跌幅统一按方向着色，和顶部指数面板保持一致
+        price.setStyleSheet(f"color: {color};")
         change.setStyleSheet(f"color: {color};")
 
     def _clear_row(self, name: QLabel, price: QLabel, change: QLabel) -> None:

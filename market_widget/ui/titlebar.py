@@ -14,6 +14,7 @@ class TitleBar(QWidget):
 
     minimize_clicked = Signal()
     close_clicked = Signal()
+    input_clicked = Signal()
 
     def __init__(self, title: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -25,9 +26,13 @@ class TitleBar(QWidget):
         self._title.setFont(ui_font(11, bold=True))
         self._title.setStyleSheet(f"color: {PALETTE.text}; background: transparent;")
 
-        self._live_dot = QLabel("●")              # 数据源指示灯：绿色=已接入实时数据
-        self._live_dot.setStyleSheet(f"color: {PALETTE.down}; background: transparent;")
-        self._live_dot.setToolTip("数据源未接入，示例数据")
+        self._live_dot = QLabel("●")              # 数据源指示灯：蓝色=已接入（红绿只留给涨跌）
+        self._live_dot.setStyleSheet(f"color: {PALETTE.text_muted}; background: transparent;")
+        self._live_dot.setToolTip("数据源未接入")
+
+        self._input_button = self._icon_button("⚙", "数据输入")  # 数据输入面板开关
+        self._input_button.setCheckable(True)
+        self._input_button.clicked.connect(self.input_clicked.emit)
 
         self._min_button = self._icon_button("—", "锁定迷你")   # 收起/锁定按钮
         self._min_button.clicked.connect(self.minimize_clicked.emit)
@@ -42,6 +47,7 @@ class TitleBar(QWidget):
         layout.addWidget(self._live_dot)
         layout.addWidget(self._title)
         layout.addStretch(1)
+        layout.addWidget(self._input_button)
         layout.addWidget(self._min_button)
         layout.addWidget(self._close_button)
 
@@ -50,10 +56,14 @@ class TitleBar(QWidget):
         self._title.setText(title)
 
     def set_live(self, live: bool, tip: str) -> None:
-        """切换数据源指示灯：绿色表示已接入实时数据。"""
-        color = PALETTE.down if live else PALETTE.text_muted
+        """切换数据源指示灯：蓝色表示已接入实时数据。"""
+        color = PALETTE.accent if live else PALETTE.text_muted
         self._live_dot.setStyleSheet(f"color: {color}; background: transparent;")
         self._live_dot.setToolTip(tip)
+
+    def set_input_active(self, active: bool) -> None:
+        """齿轮按钮的选中态与数据输入面板的显隐保持一致。"""
+        self._input_button.setChecked(active)
 
     def set_minimized(self, minimized: bool) -> None:
         """锁定迷你态时把收起按钮改成「展开」。"""

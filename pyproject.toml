@@ -9,3 +9,6 @@ version = "0.1.0"
 [tool.setuptools]
 packages = ["stock", "market_widget", "common"]
 # data 是数据目录不是Python包，不要写进去
+
+[tool.setuptools.package-data]
+market_widget = ["assets/*.svg"]

@@ -100,7 +100,7 @@ class MarketWidget(QWidget):
 
         self._refresh_timer = QTimer(self)             # 自动刷新定时器（由数据输入面板控制启停）
         self._refresh_timer.timeout.connect(self.data_requested.emit)
-        self._input_panel._on_auto_toggled(True)
+        self._input_panel.start_auto_refresh()
 
     # ------------------------------------------------------------------
     # 界面搭建
@@ -114,9 +114,10 @@ class MarketWidget(QWidget):
         self._card_layout.setContentsMargins(0, 0, 0, 0)
         self._card_layout.setSpacing(0)
 
-        self._titlebar = TitleBar(WINDOW_TITLE, parent=self._card)  # 顶部栏（拖动 / 收起 / 关闭）
+        self._titlebar = TitleBar(WINDOW_TITLE, parent=self._card)  # 顶部栏（拖动 / 数据输入 / 收起 / 关闭）
         self._titlebar.minimize_clicked.connect(self.toggle_minimized)
         self._titlebar.close_clicked.connect(self.close)
+        self._titlebar.input_clicked.connect(self.toggle_input_panel)
 
         # 迷你态单行（标题栏下方，只显示一只指数）
         self._mini_row = self._build_mini_row(self._card)  # 迷你态单行容器
@@ -134,16 +135,24 @@ class MarketWidget(QWidget):
         self._watchlist.item_double_clicked.connect(self._on_item_activated)
         self._watchlist.layout_changed.connect(self._schedule_refit)
         body_layout.addWidget(self._watchlist, 1)
-        body_layout.addWidget(self._divider(self._body))
-        self._input_panel = InputPanel(parent=self._body)  # 数据输入面板（批量粘贴 / 增删自选 / 自动刷新）
+
+        # 数据输入区：默认隐藏，由标题栏齿轮开关；分隔线放在容器内，隐藏时不会留下孤线
+        self._input_section = QWidget(self._body)
+        input_layout = QVBoxLayout(self._input_section)
+        input_layout.setContentsMargins(0, 0, 0, 0)
+        input_layout.setSpacing(0)
+        input_layout.addWidget(self._divider(self._input_section))
+
+        self._input_panel = InputPanel(parent=self._input_section)  # 数据输入面板（批量粘贴 / 增删自选 / 自动刷新）
         self._input_panel.quotes_submitted.connect(self.push_quotes)
         self._input_panel.item_added.connect(self.add_watch_item)
         self._input_panel.item_removed.connect(self.remove_watch_item)
         self._input_panel.refresh_requested.connect(self.data_requested.emit)
         self._input_panel.auto_refresh_toggled.connect(self.set_auto_refresh)
-        self._input_panel.layout_changed.connect(self._schedule_refit)
+        input_layout.addWidget(self._input_panel)
 
-        body_layout.addWidget(self._input_panel)
+        self._input_section.hide()
+        body_layout.addWidget(self._input_section)
 
         self._card_layout.addWidget(self._titlebar)
         self._card_layout.addWidget(self._mini_row)
@@ -303,6 +312,22 @@ class MarketWidget(QWidget):
         print("完整展开状态：", self._hover_expanded)
         print("收起前窗口高度：", self.height())
         self._apply_mode_visibilities()
+
+    # ------------------------------------------------------------------
+    # 数据输入面板显隐（标题栏齿轮）
+    # ------------------------------------------------------------------
+    def toggle_input_panel(self) -> None:
+        """切换数据输入面板；迷你态下点击会先展开窗口。"""
+        if self._locked_minimized:
+            self._locked_minimized = False
+        if not self._hover_expanded:
+            self._hover_expanded = True
+            self._apply_mode_visibilities()
+
+        show = self._input_section.isHidden()
+        self._input_section.setVisible(show)
+        self._titlebar.set_input_active(show)
+        self._schedule_refit()
 
     # ------------------------------------------------------------------
     # 窗口行为
