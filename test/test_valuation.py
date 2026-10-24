@@ -36,7 +36,7 @@ def make_history(pe_end: float = 19.75, pb_end: float = 2.95, periods: int = 40)
             "close": 20.0,
             "board_code": BOARD,
             "board_name": "测试行业",
-            "fetched_at": "2026-10-24 15:00:00",
+            "fetched_at": fresh_stamp(),
         })
     return rows
 
@@ -49,6 +49,11 @@ PEERS = [
     {"code": "000005", "name": "亏钱公司", "pe_ttm": -3.0, "pb_mrq": 0.5, "total_mv": 500 * E8},
     {"code": CODE, "name": "测试股份", "pe_ttm": 19.75, "pb_mrq": 2.95, "total_mv": 100 * E8},
 ]
+
+def fresh_stamp() -> str:
+    """缓存有效期是 6 小时，夹具时间要跟着当前时间走，否则晚上跑就过期了。"""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
 
 HISTORY = make_history()
 
@@ -73,7 +78,7 @@ def fake_peers(board_code: str, trade_date: str) -> list[dict]:
     calls["peers"] += 1
     return [
         {**peer, "board_code": board_code, "trade_date": trade_date,
-         "fetched_at": "2026-10-24 15:00:00"}
+         "fetched_at": fresh_stamp()}
         for peer in PEERS
     ]
 
