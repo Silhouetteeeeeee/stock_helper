@@ -25,6 +25,7 @@ def test_history_from_rows() -> None:
          "net_profit": 25e8, "gross_margin": 46.0, "net_margin": 20.8,
          "roe": 32.0, "selling_expense": 16e8, "admin_expense": 6e8,
          "rd_expense": 1.2e8, "ocf_to_net_profit": 1.1, "debt_ratio": 42.0,
+         "operating_cash_flow": 30e8, "capex": 8e8, "free_cash_flow": 22e8,
          "fetched_at": "2026-10-24 15:00:00"},
         {"report_date": "2026-03-31", "revenue": 35e8, "gross_margin": 47.0},
     ]
@@ -35,6 +36,9 @@ def test_history_from_rows() -> None:
     assert latest["selling_ratio"] == 13.3   # 16/120*100，保留一位
     assert latest["admin_ratio"] == 5.0
     assert latest["rd_ratio"] == 1.0
+    assert latest["operating_cash_flow_yi"] == 30.0, latest
+    assert latest["capex_yi"] == 8.0, latest
+    assert latest["free_cash_flow_yi"] == 22.0, latest
     assert data["span"] == "2024-2025"
     assert data["as_of"] == "2025-12-31"
     assert data["fetched_at"] == "2026-10-24 15:00:00"
@@ -60,6 +64,15 @@ def test_history_edge_cases() -> None:
     row = history_from_rows([{**negative[0], "revenue": -100e8,
                               "selling_expense": 5e8}])["years"][0]
     assert row["selling_ratio"] is None, row
+
+    # 自由现金流为负是真实经营状态，要保留负号，不能像费用率那样留空
+    burning = [{"report_date": "2025-12-31", "revenue": 100e8,
+                "cost_of_revenue": 60e8, "gross_margin": 40.0,
+                "operating_cash_flow": 3e8, "capex": 9e8,
+                "free_cash_flow": -6e8}]
+    row = history_from_rows(burning)["years"][0]
+    assert row["free_cash_flow_yi"] == -6.0, row
+    assert row["capex_yi"] == 9.0, row
 
     # 中间缺一年要写进 notes，不能悄悄压缩成连续四年
     gappy = history_from_rows([

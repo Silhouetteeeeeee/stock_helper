@@ -115,6 +115,9 @@ def _year_row(row: dict) -> dict:
         "admin_ratio": None if financial else _ratio(row.get("admin_expense"), revenue),
         "rd_ratio": None if financial else _ratio(row.get("rd_expense"), revenue),
         "ocf_to_net_profit": None if financial else _round(row.get("ocf_to_net_profit"), 3),
+        "operating_cash_flow_yi": _yi(row.get("operating_cash_flow")),
+        "capex_yi": _yi(row.get("capex")),
+        "free_cash_flow_yi": _yi(row.get("free_cash_flow")),
         "debt_ratio": _round(row.get("debt_ratio"), 1),
     }
 

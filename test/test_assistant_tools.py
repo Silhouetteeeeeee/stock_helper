@@ -163,6 +163,10 @@ def test_load_skill_tool() -> None:
     assert result.data["name"] == "moat"
     assert "可证伪" in result.data["instructions"]
 
+    third = tools.run_tool("load_skill", {"name": "operating_history"})
+    assert third.ok is True, third
+    assert "自由现金流" in third.data["instructions"]
+
     missing = tools.run_tool("load_skill", {"name": "q9"})
     assert missing.ok is False
     assert "business_model" in missing.error and "moat" in missing.error, missing
@@ -172,7 +176,7 @@ def test_load_skill_tool() -> None:
         if item["function"]["name"] == "load_skill"
     )
     assert schema["function"]["parameters"]["properties"]["name"]["enum"] == [
-        "business_model", "moat"
+        "business_model", "moat", "operating_history"
     ]
 
 
