@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import assistant.tools as tools
 from common.stock import Stock
+from stock.finance_history import history_from_rows
 from stock.valuation import valuation_from_rows
 
 
@@ -50,7 +51,8 @@ def test_schemas() -> None:
     names = [item["function"]["name"] for item in tools.schemas()]
     assert names == [
         "resolve_company", "get_company_profile", "get_finance",
-        "get_segments", "get_announcements", "get_valuation",
+        "get_financial_history", "get_segments", "get_announcements",
+        "get_valuation",
     ], names
     for item in tools.schemas():
         assert item["type"] == "function"
@@ -152,6 +154,47 @@ def fake_segments(rows, kind=None, code=None, name=None, stale=False) -> dict:
 
 
 REGION = True
+
+
+def test_financial_history_tool() -> None:
+    rows = [
+        {"report_date": f"{year}-12-31", "revenue": (80 + 10 * i) * 1e8,
+         "revenue_yoy": 10.0, "net_profit": 20e8, "gross_margin": 45.0,
+         "fetched_at": "2026-10-24 15:00:00"}
+        for i, year in enumerate(range(2016, 2026))
+    ]
+
+    def fake_history(code, years=10):
+        data = history_from_rows(rows, years=years)
+        return {
+            "available": data["available"], "code": code, "name": "东鹏饮料",
+            "as_of": data["as_of"], "fetched_at": data["fetched_at"],
+            "span": data["span"], "years": data["years"], "notes": data["notes"],
+        }
+
+    original = getattr(tools, "build_history", None)
+    tools.build_history = fake_history  # type: ignore[assignment]
+    try:
+        result = tools.run_tool(
+            "get_financial_history", {"years": 5}, default_company="605499"
+        )
+    finally:
+        tools.build_history = original  # type: ignore[assignment]
+    assert result.ok is True, result
+    assert result.data["span"] == "2021-2025", result.data
+    assert len(result.data["years"]) == 5, result.data
+    assert result.sources[0].id == "finance_history:605499:2021-2025", result.sources
+    assert result.sources[0].as_of == "2025-12-31", result.sources
+
+
+def test_financial_history_missing() -> None:
+    original = getattr(tools, "build_history", None)
+    tools.build_history = lambda code, years=10: {"available": False}  # type: ignore[assignment]
+    try:
+        result = tools.run_tool("get_financial_history", {}, default_company="000001")
+    finally:
+        tools.build_history = original  # type: ignore[assignment]
+    assert result.ok is False and "年报" in result.error, result
 
 
 def test_segments_two_slices() -> None:
@@ -320,6 +363,8 @@ def main() -> None:
     test_schemas()
     test_resolve_company()
     test_finance_units_and_sources()
+    test_financial_history_tool()
+    test_financial_history_missing()
     test_profile_tool()
     test_segments_two_slices()
     test_segments_region_missing()

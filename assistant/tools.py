@@ -14,6 +14,7 @@ import copy
 
 from stock.announcements import build_announcements
 from stock.db_service import get_all_stocks, get_stock, get_stock_by_name
+from stock.finance_history import build_history
 from stock.finance_snapshot import build_snapshot
 from stock.segments import ensure_segments, segments_from_rows
 from stock.utils import get_stock_prefix
@@ -66,6 +67,24 @@ TOOL_SCHEMAS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {"company": _COMPANY},
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_financial_history",
+            "description": "年度财务序列：5–10 年的营收、净利、毛利率、净利率、费用率、ROE、现金流与负债率，用来看盈利能力能否持续",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "years": {
+                        "type": "integer",
+                        "description": "回看年数，1-10，默认 10",
+                    },
+                    "company": _COMPANY,
+                },
                 "additionalProperties": False,
             },
         },
@@ -190,6 +209,8 @@ def run_tool(
             return _company_profile(code)
         if name == "get_finance":
             return _finance(code)
+        if name == "get_financial_history":
+            return _financial_history(code, arguments)
         if name == "get_segments":
             return _segments(code)
         if name == "get_announcements":
@@ -291,6 +312,43 @@ def _finance(code: str) -> ToolResult:
         fetched_at=latest.get("fetched_at") or "",
     )
     return ToolResult(ok=True, company=code, as_of=period, sources=(source,), data=data)
+
+
+def _financial_history(code: str, arguments: dict) -> ToolResult:
+    try:
+        years = int(arguments.get("years") or 10)
+    except (TypeError, ValueError):
+        years = 10
+    years = min(max(years, 1), 10)
+
+    data = build_history(code, years=years)
+    if not data.get("available"):
+        return ToolResult(ok=False, company=code, error=f"{code}：没有可用的年报序列")
+
+    span = data.get("span") or ""
+    as_of = data.get("as_of") or ""
+    name = data.get("name")
+    source = Source(
+        id=f"finance_history:{code}:{span}",
+        label="财报·年度序列",
+        detail=f"{name or code} {span} 年度财务",
+        as_of=as_of,
+        fetched_at=data.get("fetched_at") or "",
+    )
+    return ToolResult(
+        ok=True,
+        company=code,
+        as_of=as_of,
+        sources=(source,),
+        data={
+            "code": code,
+            "name": name,
+            "span": span,
+            "as_of": as_of,
+            "years": data.get("years") or [],
+            "notes": data.get("notes") or [],
+        },
+    )
 
 
 def _segments(code: str) -> ToolResult:
