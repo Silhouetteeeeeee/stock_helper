@@ -13,7 +13,8 @@ from assistant.skills import catalog, get_skill
 def test_catalog() -> None:
     items = catalog()
     assert [item["name"] for item in items] == [
-        "business_model", "moat", "operating_history", "financial_safety"
+        "business_model", "moat", "operating_history", "financial_safety",
+        "growth_outlook",
     ]
     assert all(item["description"] for item in items)
     assert all(item["title"] for item in items)
@@ -66,6 +67,16 @@ def test_financial_safety_skill() -> None:
     assert "金融机构" in text
 
 
+def test_growth_outlook_skill() -> None:
+    skill = get_skill("growth_outlook")
+    assert skill is not None
+    assert skill.title.startswith("第五问")
+    text = skill.instructions
+    for phrase in ("市场空间", "渗透率", "份额", "再投资", "资本开支",
+                   "资料不足", "get_segments", "线性外推"):
+        assert phrase in text, phrase
+
+
 def test_unknown_skill() -> None:
     assert get_skill("q9") is None
     assert get_skill(None) is None
@@ -77,6 +88,7 @@ def main() -> None:
     test_moat_skill()
     test_operating_history_skill()
     test_financial_safety_skill()
+    test_growth_outlook_skill()
     test_unknown_skill()
     print("PASS")
     sys.stdout.flush()
