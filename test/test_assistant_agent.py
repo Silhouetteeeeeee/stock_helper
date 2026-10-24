@@ -201,6 +201,14 @@ def test_retry_once() -> None:
         raise AssertionError("两次失败应抛 AssistantError")
 
 
+def test_prompt_has_concrete_citation_example() -> None:
+    from assistant.prompts import SYSTEM_PROMPT
+
+    assert "[[finance:605499:2026-06-30]]" in SYSTEM_PROMPT
+    # "[[引用id]]" 会被模型当成字面占位符，原样写进正文
+    assert "[[引用id]]" not in SYSTEM_PROMPT
+
+
 def test_use_company() -> None:
     client = FakeClient([])
     research = agent_mod.ResearchAgent(client, default_company="605499")
@@ -234,6 +242,7 @@ def main() -> None:
     test_tool_error_observation_and_multi_turn()
     test_comparison_sources()
     test_retry_once()
+    test_prompt_has_concrete_citation_example()
     test_use_company()
     print("PASS")
     sys.stdout.flush()
