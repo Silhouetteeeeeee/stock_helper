@@ -77,6 +77,35 @@ def make_valuation(
     }
 
 
+def make_segments(flags: list[dict] | None = None, available: bool = True) -> dict:
+    items = [
+        {"name": "能量饮料", "income": 89.37 * E8, "share": 71.8, "gross_margin": 54.7,
+         "yoy": 6.9, "share_delta": -6.1, "is_other": False},
+        {"name": "电解质饮料", "income": 16.72 * E8, "share": 13.4, "gross_margin": 40.6,
+         "yoy": 12.2, "share_delta": 0.1, "is_other": False},
+        {"name": "茶饮料", "income": 10.58 * E8, "share": 8.5, "gross_margin": 23.7,
+         "yoy": None, "share_delta": None, "is_other": False},
+        {"name": "其他(补充)", "income": 0.17 * E8, "share": 0.1, "gross_margin": 33.4,
+         "yoy": 187.5, "share_delta": 0.1, "is_other": True},
+    ]
+    return {
+        "available": available,
+        "code": CODE,
+        "name": NAME,
+        "as_of": "2026-06-30",
+        "kind": "2",
+        "kind_label": "产品",
+        "total_income": 124.43 * E8,
+        "previous_date": "2025-06-30",
+        "count": len(items),
+        "items": items,
+        "flags": flags or [],
+        "stale": False,
+        "sources": {"主营": "测试源"},
+        "summary": "主营构成测试",
+    }
+
+
 def text_of(briefing: dict) -> str:
     return "\n".join(briefing["lines"])
 
@@ -140,6 +169,49 @@ def main() -> None:
     assert only_valuation["headline"] == "估值 2026-10-23", only_valuation["headline"]
     assert len(only_valuation["lines"]) == 2, only_valuation["lines"]
 
+    # -- 主营构成：插在营收之后，明细进纯文本 ------------------------------
+    segments = make_segments()
+    with_segments = br.briefing_from(make_snapshot(), make_valuation(), segments)
+    assert with_segments["lines"][1] == "主营 能量饮料 72% · 电解质饮料 13%", with_segments["lines"]
+    assert len(with_segments["lines"]) == 6, with_segments["lines"]
+    assert len(with_segments["lines"]) <= br.MAX_LINES
+    assert with_segments["segments"] is segments, with_segments
+    assert with_segments["sources"]["主营"] == "测试源", with_segments["sources"]
+
+    rendered_segments = with_segments["summary"]
+    assert "主营构成 2026-06-30（按产品）：" in rendered_segments, rendered_segments
+    assert "能量饮料 89.4亿，占比 71.8%（同比 +6.9%），毛利率 54.7%" in rendered_segments
+    # 汇总项不上标题行
+    assert "其他(补充)" not in with_segments["lines"][1], with_segments["lines"][1]
+
+    # 不可用时不占行，也不写进结构
+    no_seg = br.briefing_from(make_snapshot(), None, make_segments(available=False))
+    assert not any(line.startswith("主营 ") for line in no_seg["lines"]), no_seg["lines"]
+    assert no_seg["segments"] is None, no_seg
+
+    # 分部提示排在财报提示之后、估值提示之前
+    ordered = br.briefing_from(
+        make_snapshot(flags=[{"level": "info", "message": "现金流转弱"}]),
+        make_valuation(flags=[{"level": "warning", "message": "PE 高位"}]),
+        make_segments(flags=[{"level": "warning", "message": "主业收入下滑"}]),
+    )
+    assert [alert["text"] for alert in ordered["alerts"]] == [
+        "现金流转弱",
+        "主业收入下滑",
+        "PE 高位",
+    ], ordered["alerts"]
+    assert "[异常] 主业收入下滑" in ordered["summary"], ordered["summary"]
+
+    # 分部接口失败：只多一条提示，其他照常
+    seg_error = br.briefing_from(
+        make_snapshot(), None, None, valuation_error="估值超时", segments_error="主营超时"
+    )
+    assert [alert["text"] for alert in seg_error["alerts"]] == [
+        "主营构成暂不可用",
+        "估值数据暂不可用",
+    ], seg_error["alerts"]
+    assert "主营 能量饮料" not in text_of(seg_error), text_of(seg_error)
+
     # -- 两份摘要的提示合并，纯文本里带级别 ---------------------------------
     snapshot["flags"] = [
         {"level": "warning", "code": "revenue_flat", "message": "单季营收连续两期放缓"},
@@ -160,8 +232,8 @@ def main() -> None:
     empty = br.briefing_from(None, None)
     assert empty["available"] is False, empty
     assert empty["lines"] == [] and empty["alerts"] == []
-    assert "暂无财报与估值数据" in empty["summary"], empty
-    assert "暂无财报与估值数据" in br.format_briefing(empty)
+    assert "暂无财报、主营与估值数据" in empty["summary"], empty
+    assert "暂无财报、主营与估值数据" in br.format_briefing(empty)
 
     # -- 估值接口挂了：财报照常展示，只多一条提示 --------------------------
     snapshot["flags"] = []
@@ -180,14 +252,30 @@ def main() -> None:
     def broken_valuation(*args, **kwargs):
         raise val.ValuationError("估值接口超时")
 
+    def fake_segments(code, **kwargs):
+        calls["segments"] = calls.get("segments", 0) + 1
+        return make_segments()
+
     br.build_snapshot = fake_snapshot  # type: ignore[assignment]
     br.build_valuation = broken_valuation  # type: ignore[assignment]
+    br.build_segments = fake_segments  # type: ignore[assignment]
 
     result = br.build_briefing(CODE)
     assert calls["snapshot"] == 1, calls
+    assert calls["segments"] == 1, calls
     assert result["available"] is True
     assert "PE 15.63" not in text_of(result), text_of(result)
     assert result["alerts"][-1]["text"] == "估值数据暂不可用", result["alerts"]
+    assert result["lines"][1] == "主营 能量饮料 72% · 电解质饮料 13%", result["lines"]
+
+    # 主营接口挂了同样只降级自己
+    def broken_segments(*args, **kwargs):
+        raise br.SegmentError("主营接口超时")
+
+    br.build_segments = broken_segments  # type: ignore[assignment]
+    degraded_segments = br.build_briefing(CODE)
+    assert degraded_segments["alerts"][0]["text"] == "主营构成暂不可用", degraded_segments
+    assert not any(line.startswith("主营 ") for line in degraded_segments["lines"])
 
     try:
         br.build_briefing("")

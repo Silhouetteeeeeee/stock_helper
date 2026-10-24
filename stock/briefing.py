@@ -1,9 +1,10 @@
-"""一页速览：把财报快照和估值摘要压成几行，供界面和研究助手使用。
+"""一页速览：把财报快照、主营构成和估值压成几行，供界面和研究助手使用。
 
-``finance_snapshot`` 回答"公司赚了多少"，``valuation`` 回答"市场给了多少钱"，
-两份摘要加起来还是太长，悬浮窗只有 320 像素宽。这里只留投资者最先要看
-的几个数：营收与净利、盈利能力、估值分位、行业位置，加上最多几条提示，
-并给出一份纯文本版本供模型直接引用。
+``finance_snapshot`` 回答"公司赚了多少"，``segments`` 回答"钱从哪来"，
+``valuation`` 回答"市场给了多少钱"，三份摘要加起来还是太长，悬浮窗只有
+320 像素宽。这里只留投资者最先要看的几个数：营收与净利、主营结构、
+盈利能力、估值分位、行业位置，加上最多几条提示，并给出一份纯文本版本
+供模型直接引用。
 
 * ``build_briefing(code)``   取数（走各自模块的缓存）后生成速览
 * ``briefing_from(...)``     纯函数，由已有摘要生成，便于测试
@@ -16,9 +17,12 @@ from __future__ import annotations
 
 from .db_service import normalize_stock_code
 from .finance_snapshot import DEFAULT_TREND_PERIODS, FinanceError, build_snapshot
+from .segments import SegmentError, build_segments, format_items
 from .valuation import ValuationError, build_valuation
 
-MAX_LINES = 5      # 面板上最多显示几行指标
+MAX_LINES = 6              # 面板上最多显示几行指标
+SEGMENT_PANEL_ITEMS = 2    # 面板那行主营只放得下两个分部
+SEGMENT_DETAIL_ITEMS = 5   # 纯文本里最多列几个分部
 
 
 def build_briefing(
@@ -26,39 +30,80 @@ def build_briefing(
     trend_periods: int = DEFAULT_TREND_PERIODS,
     force: bool = False,
 ) -> dict:
-    """取数并生成一页速览。估值取不到时只影响估值相关的那几行。"""
+    """取数并生成一页速览。
+
+    估值、主营构成任一取不到时只影响它自己那几行，不影响财报部分。
+    """
     code = normalize_stock_code(code)
     if not code:
         raise FinanceError("请输入股票代码")
 
     snapshot = build_snapshot(code, periods=trend_periods, force=force)
+
+    segments, segments_error = None, None
+    try:
+        segments = build_segments(code, force=force)
+    except SegmentError as error:
+        segments_error = str(error)
+
     valuation, valuation_error = None, None
     try:
         valuation = build_valuation(code, force=force)
     except ValuationError as error:
         # 估值接口不稳定时财报部分照常展示，不要整块空掉
         valuation_error = str(error)
-    return briefing_from(snapshot, valuation, valuation_error=valuation_error)
+    return briefing_from(
+        snapshot,
+        valuation,
+        segments,
+        valuation_error=valuation_error,
+        segments_error=segments_error,
+    )
 
 
 def briefing_from(
     snapshot: dict | None,
     valuation: dict | None = None,
+    segments: dict | None = None,
     valuation_error: str | None = None,
+    segments_error: str | None = None,
 ) -> dict:
-    """由财报快照与估值摘要生成速览（纯函数）。"""
+    """由财报快照、估值与主营构成生成速览（纯函数）。"""
     snapshot = snapshot or {}
-    name = snapshot.get("name") or (valuation or {}).get("name")
-    code = snapshot.get("code") or (valuation or {}).get("code")
+    name = (
+        snapshot.get("name")
+        or (segments or {}).get("name")
+        or (valuation or {}).get("name")
+    )
+    code = (
+        snapshot.get("code")
+        or (segments or {}).get("code")
+        or (valuation or {}).get("code")
+    )
     lines: list[str] = []
     alerts: list[dict] = []
 
     if snapshot.get("available"):
-        lines.extend(_financial_lines(snapshot))
+        financial = _financial_lines(snapshot)
+        segment_line = None
+        if segments and segments.get("available"):
+            segment_line = _segment_line(segments)
+        if segment_line:
+            # 营收之后马上回答"钱从哪来"，再往下列盈利能力
+            financial.insert(1, segment_line)
+        lines.extend(financial)
         alerts.extend(
             {"level": flag.get("level", "info"), "text": flag.get("message", "")}
             for flag in snapshot.get("flags") or []
         )
+
+    if segments and segments.get("available"):
+        alerts.extend(
+            {"level": flag.get("level", "info"), "text": flag.get("message", "")}
+            for flag in segments.get("flags") or []
+        )
+    elif segments_error:
+        alerts.append({"level": "info", "text": "主营构成暂不可用"})
 
     if valuation and valuation.get("available"):
         lines.extend(_valuation_lines(valuation))
@@ -77,7 +122,7 @@ def briefing_from(
             "headline": "暂无数据",
             "lines": [],
             "alerts": [],
-            "summary": f"{name or '该股票'}：暂无财报与估值数据",
+            "summary": f"{name or '该股票'}：暂无财报、主营与估值数据",
         }
 
     briefing = {
@@ -87,8 +132,10 @@ def briefing_from(
         "headline": _headline(snapshot, valuation),
         "lines": lines[:MAX_LINES],
         "alerts": alerts,
+        "segments": segments if segments and segments.get("available") else None,
         "sources": {
             **(snapshot.get("sources") or {}),
+            **((segments or {}).get("sources") or {}),
             **((valuation or {}).get("sources") or {}),
         },
     }
@@ -97,7 +144,7 @@ def briefing_from(
 
 
 def format_briefing(briefing: dict) -> str:
-    """渲染成纯文本：标题一行、指标几行、提示几条。"""
+    """渲染成纯文本：标题一行、指标几行、主营明细、提示几条。"""
     if not briefing.get("available"):
         return briefing.get("summary") or "暂无数据"
 
@@ -108,6 +155,10 @@ def format_briefing(briefing: dict) -> str:
     )
     lines = [f"{title} · {briefing['headline']}"]
     lines.extend(briefing["lines"])
+    segments = briefing.get("segments") or {}
+    if segments.get("available"):
+        lines.append(f"主营构成 {segments['as_of']}（按{segments['kind_label']}）：")
+        lines.extend(format_items(segments, SEGMENT_DETAIL_ITEMS))
     if briefing["alerts"]:
         lines.append("提示：")
         for alert in briefing["alerts"]:
@@ -151,6 +202,22 @@ def _financial_lines(snapshot: dict) -> list[str]:
     if cash_line:
         lines.append(cash_line)
     return lines
+
+
+def _segment_line(segments: dict) -> str | None:
+    """面板那行主营：只留最大的两个分部，名字太长也没关系，标签会换行。"""
+    items = segments.get("items") or []
+    chosen = [item for item in items if not item.get("is_other")][:SEGMENT_PANEL_ITEMS]
+    if not chosen:
+        # 全是"其他"这类汇总项时，至少把最大的那个写出来
+        chosen = items[:SEGMENT_PANEL_ITEMS]
+    parts = []
+    for item in chosen:
+        share = item.get("share")
+        parts.append(
+            f"{item['name']} {share:.0f}%" if share is not None else item["name"]
+        )
+    return "主营 " + " · ".join(parts) if parts else None
 
 
 def _valuation_lines(valuation: dict) -> list[str]:
