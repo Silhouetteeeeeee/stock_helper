@@ -15,9 +15,9 @@ CHINA_TZ = ZoneInfo("Asia/Shanghai")
 
 def get_stock_minute_price(code: str) -> tuple[pd.DataFrame, float]:
     """
-    获取股票最近交易日分时交易数据及前一交易日收盘价。
+    获取股票/指数最近交易日分时交易数据及前一交易日收盘价。
 
-    :param code: 带交易所前缀的代码，例如 "sh605499"
+    :param code: 带交易所前缀的代码，例如 "sh605499"、"sh000001"
     :return:
         (df_last, pre_close)
         df_last 包含以下列：

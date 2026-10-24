@@ -20,20 +20,11 @@ from stock.utils import (
     is_trading_day,
     is_trading_time,
 )
+from .config import INDEX_CODES
 from .main_window import MarketWidget
 from .ui import MinutePoint
 from .ui.timeshare import SESSION_MINUTES
 
-INDEX_CODES = [
-    "sh000001",  # 上证指数
-    "sh000300",  # 沪深300
-    "sh000688",  # 科创50
-    "sz399006",  # 创业板指
-    "sh000905",  # 中证500
-    "sh000852",  # 中证1000
-]
-
-TIMESHARE_CODE = "sh605499"
 INTRADAY_REFRESH_MS = 60_000
 
 
@@ -49,23 +40,38 @@ def _minute_index(ts) -> int:
     return min(SESSION_MINUTES - 1, 120 + max(0, minute - 13 * 60 - 1))
 
 
-def realtime_intraday(code: str) -> tuple[list[MinutePoint], float]:
-    """获取最近交易日的分时点与昨收。"""
-    df, pre_close = su.get_stock_minute_price(code)
+def _normalize_code(code: str) -> str:
+    """把自选股/指数代码统一成小写交易所前缀形式，例如 605499 -> sh605499。"""
+    prefix, digits = su.get_stock_prefix(code)
+    if prefix == "UNKNOWN" or not digits:
+        return code.lower()
+    return f"{prefix.lower()}{digits}"
+
+
+def realtime_intraday(
+    code: str,
+    is_index: bool = False,
+) -> tuple[list[MinutePoint], float]:
+    """获取最近交易日的分时点与昨收。
+
+    股票均价用累计成交额 / 累计成交量；
+    指数的 amount / volume 是成分股平均股价而非点位，
+    因此指数改用累计（点位 × 成交量）/ 累计成交量。
+    """
+    df, pre_close = su.get_stock_minute_price(_normalize_code(code))
     points: list[MinutePoint] = []
-    total_amount = 0.0
+    total_weighted = 0.0
     total_volume = 0.0
 
     for row in df.itertuples(index=False):
         price = float(row.close)
         volume = float(row.volume)
-        amount = float(row.amount)
+        weighted = price * volume if is_index else float(row.amount)
 
-        # 分时均价 = 累计成交额 / 累计成交量
-        if volume > 0 and amount == amount:  # amount == amount 用于排除 NaN
-            total_amount += amount
+        if volume > 0 and weighted == weighted:  # weighted == weighted 用于排除 NaN
+            total_weighted += weighted
             total_volume += volume
-        avg = total_amount / total_volume if total_volume else price
+        avg = total_weighted / total_volume if total_volume else price
 
         points.append(
             MinutePoint(
@@ -80,23 +86,25 @@ def realtime_intraday(code: str) -> tuple[list[MinutePoint], float]:
 
 
 class _IntradaySignals(QObject):
-    finished = Signal(object)  # (list[MinutePoint], float) 或 Exception
+    finished = Signal(int, object)  # 请求序号 / (list[MinutePoint], float) 或 Exception
 
 
 class _IntradayWorker(QRunnable):
     """后台抓取分时数据，避免网络请求阻塞界面。"""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, is_index: bool, request_id: int) -> None:
         super().__init__()
         self._code = code
+        self._is_index = is_index
+        self._request_id = request_id
         self.signals = _IntradaySignals()
 
     def run(self) -> None:
         try:
-            result = realtime_intraday(self._code)
+            result = realtime_intraday(self._code, self._is_index)
         except Exception as exc:
             result = exc
-        self.signals.finished.emit(result)
+        self.signals.finished.emit(self._request_id, result)
 
 
 class DemoFeed(QObject):
@@ -108,6 +116,9 @@ class DemoFeed(QObject):
         self.is_first = True
         self._first_intraday = True
         self._busy = False
+
+        self._code, self._name, self._is_index = window.selected_symbol()
+        self._request_id = 0
 
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(1)
@@ -121,12 +132,24 @@ class DemoFeed(QObject):
         self._intraday_timer.start()
         self.refresh_intraday()
 
+    def set_symbol(self, code: str, name: str, is_index: bool) -> None:
+        """界面切换选中标的后立即拉取对应分时，并让旧请求的结果失效。"""
+        self._code = code
+        self._name = name
+        self._is_index = is_index
+        self._request_id += 1
+        self._busy = False
+        self._first_intraday = True
+        # 清掉尚未执行的旧请求，避免快速切换时排队抓取过期标的
+        self._pool.clear()
+        self.refresh_intraday()
+
     def publish(self) -> None:
         if not self.is_first and not is_trading_time():
             print("当前非交易时间")
             return
         print("刷新数据")
-        tmp = INDEX_CODES.copy()
+        tmp = list(INDEX_CODES)
         tmp.extend([item.code for item in self._window.watchlist_items()])
         quotes = get_sina_current_stock_info_list(tmp)
         self._window.push_quotes(quotes)
@@ -135,7 +158,7 @@ class DemoFeed(QObject):
 
     def refresh_intraday(self) -> None:
         """每分钟刷新一次分时图；首次加载和收盘后补刷不受交易时段限制。"""
-        if self._busy:
+        if self._busy or not self._code:
             return
 
         if not self._first_intraday:
@@ -148,14 +171,18 @@ class DemoFeed(QObject):
                 return
 
         self._busy = True
-        worker = _IntradayWorker(TIMESHARE_CODE)
+        self._request_id += 1
+        worker = _IntradayWorker(self._code, self._is_index, self._request_id)
         worker.signals.finished.connect(self._on_intraday_ready)
         self._pool.start(worker)
 
-    def _on_intraday_ready(self, result: object) -> None:
+    def _on_intraday_ready(self, request_id: int, result: object) -> None:
+        # 切换标的后旧请求可能才返回，直接丢弃，避免覆盖当前曲线
+        if request_id != self._request_id:
+            return
         self._busy = False
         if isinstance(result, Exception):
-            print(f"分时刷新失败: {result}")
+            print(f"分时刷新失败（{self._name}）: {result}")
             return
 
         points, pre_close = result
@@ -176,6 +203,7 @@ def main() -> int:
 
     feed = DemoFeed(window)
     window.data_requested.connect(feed.publish)
+    window.symbol_selected.connect(feed.set_symbol)
     feed.start()
     feed.publish()
     return app.exec()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QObject, QEvent
+from PySide6.QtCore import Qt, QObject, QEvent, Signal
 from PySide6.QtWidgets import QGridLayout, QLabel, QVBoxLayout, QWidget, QHBoxLayout, QScrollArea, QSizePolicy
 
 from common.stock import *
@@ -12,8 +12,16 @@ from ..theme import PALETTE, color_for_direction, format_change_pct, format_pric
 class _IndexCell(QWidget):
     """单个指数单元：名称 / 点位 / 涨跌幅，纵向居中排列。"""
 
-    def __init__(self, name: str, parent: QWidget | None = None) -> None:
+    clicked = Signal(str, str)  # 指数代码 / 名称
+
+    def __init__(self, code: str, name: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+
+        self.code = code
+        self.name = name
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(f"{name}（{code}）")
 
         self._name = QLabel(name)
         self._name.setFont(ui_font(10))
@@ -28,12 +36,32 @@ class _IndexCell(QWidget):
         self._change.setFont(numeric_font(10))
         self._change.setAlignment(Qt.AlignCenter)
 
+        # 点击落到单元格上，避免点在文字上时收不到选中事件
+        for label in (self._name, self._value, self._change):
+            label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(1)
         layout.addWidget(self._name)
         layout.addWidget(self._value)
         layout.addWidget(self._change)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit(self.code, self.name)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def set_selected(self, selected: bool) -> None:
+        """高亮当前选中的指数。"""
+        if selected:
+            self.setStyleSheet(f"background-color: {PALETTE.hover}; border-radius: 6px;")
+            self._name.setStyleSheet(f"color: {PALETTE.accent};")
+        else:
+            self.setStyleSheet("background-color: transparent;")
+            self._name.setStyleSheet(f"color: {PALETTE.text_muted};")
 
     def update_quote(self, quote: Quote) -> None:
         color = color_for_direction(quote.direction)
@@ -92,9 +120,11 @@ class _DragScrollFilter(QObject):
 class IndexPanel(QWidget):
     """大盘指数总览：横向滚动，单元格不被压缩。"""
 
+    index_clicked = Signal(str, str)  # 指数代码 / 名称
+
     def __init__(
         self,
-        index_names: tuple[str, ...],
+        index_items: tuple[tuple[str, str], ...],
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -144,11 +174,12 @@ class IndexPanel(QWidget):
         outer_layout.addWidget(self._scroll)
 
         self._cells: dict[str, _IndexCell] = {}
-        self.set_index_names(index_names)
+        self._selected_code: str | None = None
+        self.set_index_items(index_items)
 
-    def set_index_names(
+    def set_index_items(
         self,
-        index_names: tuple[str, ...],
+        index_items: tuple[tuple[str, str], ...],
     ) -> None:
         # 删除旧单元格
         while self._row.count():
@@ -161,8 +192,9 @@ class IndexPanel(QWidget):
         self._cells.clear()
 
         # 重建单元格
-        for name in index_names:
-            cell = _IndexCell(name, self._content)
+        for code, name in index_items:
+            cell = _IndexCell(code, name, self._content)
+            cell.clicked.connect(self.index_clicked.emit)
 
             # 每个单元格至少有这么宽，不会被布局压缩
             cell.setMinimumWidth(125)
@@ -180,6 +212,13 @@ class IndexPanel(QWidget):
         self._row.addStretch(1)
 
         self._content.adjustSize()
+        self.set_selected(self._selected_code)
+
+    def set_selected(self, code: str | None) -> None:
+        """高亮指定指数；传入 None 清除全部高亮。"""
+        self._selected_code = code
+        for cell in self._cells.values():
+            cell.set_selected(cell.code == code)
 
     def update_quotes(self, quotes: list[Quote]) -> None:
         """按名称匹配刷新，未携带的指数保留原值。"""

@@ -12,6 +12,8 @@
     ``window.set_watchlist(items)``       重建自选股列表
     ``window.set_timeshare(points, pre_close)``  刷新分时图
     ``window.data_requested``             信号：界面需要一份新数据时发出
+    ``window.symbol_selected``            信号：选中自选股/指数时发出（代码、名称、是否指数）
+    ``window.selected_symbol()``          返回当前选中的（代码、名称、是否指数）
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from .config import (
     DEFAULT_WATCHLIST,
     HOVER_COLLAPSE_DELAY_MS,
     HOVER_EXPAND_DELAY_MS,
+    INDEX_ITEMS,
     INDEX_NAMES,
     MINIMIZED_HEIGHT,
     MINI_MODE_ROW_HEIGHT,
@@ -66,6 +69,7 @@ class MarketWidget(QWidget):
 
     data_requested = Signal()
     item_activated = Signal(str)  # 双击自选股，抛出股票代码
+    symbol_selected = Signal(str, str, bool)  # 选中标的：代码 / 名称 / 是否指数
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -81,9 +85,13 @@ class MarketWidget(QWidget):
 
         self._locked_minimized = START_MINIMIZED   # 锁定迷你态：只保留标题栏
         self._hover_expanded = False                # 当前是否因悬停而完整展开
+        self._selected_code = ""                    # 当前选中标的（自选股或指数）
+        self._selected_name = ""
+        self._selected_is_index = False
         self._card = QFrame(self)                  # 卡片容器（承载标题栏 + 主体）
         self._card.setObjectName("Card")
         self._build_ui()
+        self._select_default_symbol()
 
         # 悬停防抖定时器
         self._hover_collapse_timer = QTimer(self)     # 鼠标移出后延迟多少毫秒再收起（防抖）
@@ -128,15 +136,18 @@ class MarketWidget(QWidget):
         body_layout = QVBoxLayout(self._body)
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(0)
-        self._index_panel = IndexPanel(INDEX_NAMES, self._body)  # 大盘指数三列面板
+        self._index_panel = IndexPanel(INDEX_ITEMS, self._body)  # 大盘指数三列面板
+        self._index_panel.index_clicked.connect(self._on_index_clicked)
         body_layout.addWidget(self._index_panel)
         body_layout.addWidget(self._divider(self._body))
-        body_layout.addWidget(self._section_title("分时", self._body))
+        self._timeshare_title = self._section_title("分时", self._body)
+        body_layout.addWidget(self._timeshare_title)
         self._timeshare = TimeShareChart(self._body)  # 分时图（数据由外部注入）
         body_layout.addWidget(self._timeshare)
         body_layout.addWidget(self._divider(self._body))
         body_layout.addWidget(self._section_title("自选股", self._body))
         self._watchlist = WatchListPanel(DEFAULT_WATCHLIST, self._body)  # 自选股列表
+        self._watchlist.item_clicked.connect(self._on_watch_clicked)
         self._watchlist.item_double_clicked.connect(self._on_item_activated)
         self._watchlist.layout_changed.connect(self._schedule_refit)
         body_layout.addWidget(self._watchlist, 1)
@@ -240,6 +251,46 @@ class MarketWidget(QWidget):
         """刷新分时图（必须在主线程调用）。"""
         self._timeshare.set_data(points, pre_close)
 
+    def selected_symbol(self) -> tuple[str, str, bool]:
+        """返回当前选中的（代码, 名称, 是否指数）。"""
+        return self._selected_code, self._selected_name, self._selected_is_index
+
+    def _select_default_symbol(self) -> None:
+        """优先选中第一只自选股，没有自选股时选中第一个指数。"""
+        items = self._watchlist.items()
+        if items:
+            self._select_symbol(items[0].code, items[0].name, False)
+        elif INDEX_ITEMS:
+            code, name = INDEX_ITEMS[0]
+            self._select_symbol(code, name, True)
+
+    def _select_symbol(self, code: str, name: str, is_index: bool) -> None:
+        """切换图表标的：更新高亮与标题，并通知数据层拉取对应分时。"""
+        if (
+            code == self._selected_code
+            and name == self._selected_name
+            and is_index == self._selected_is_index
+        ):
+            return
+
+        self._selected_code = code
+        self._selected_name = name
+        self._selected_is_index = is_index
+        self._watchlist.set_selected(None if is_index else code)
+        self._index_panel.set_selected(code if is_index else None)
+        self._timeshare_title.setText(f"分时 · {name}" if name else "分时")
+        # 先清空旧标的的曲线，等新数据到达后再绘制，避免标题与图形不一致
+        self._timeshare.set_data([], 0.0)
+        self.symbol_selected.emit(code, name, is_index)
+
+    def _on_watch_clicked(self, code: str) -> None:
+        item = next((item for item in self._watchlist.items() if item.code == code), None)
+        if item is not None:
+            self._select_symbol(item.code, item.name, False)
+
+    def _on_index_clicked(self, code: str, name: str) -> None:
+        self._select_symbol(code, name, True)
+
     def push_quotes(self, quotes: list[Quote]) -> None:
         """指数与自选股一起刷新：代码或名称命中的记录会自动归位。"""
         self._index_panel.update_quotes(quotes)
@@ -259,6 +310,11 @@ class MarketWidget(QWidget):
 
     def set_watchlist(self, items: list[WatchItem]) -> None:
         self._watchlist.set_items(items)
+        # 选中的股票被删除时，自动切换到第一只自选股或第一个指数
+        if not self._selected_is_index and not any(
+            item.code == self._selected_code for item in items
+        ):
+            self._select_default_symbol()
 
     def watchlist_items(self) -> list[WatchItem]:
         return self._watchlist.items()

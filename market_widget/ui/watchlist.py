@@ -19,12 +19,23 @@ COLUMN_HEADERS = ("名称", "现价", "涨跌幅")
 ROW_HEIGHT = 26
 
 class _RowWidget(QWidget):
-    """自选股单行容器，仅用于接收双击事件。"""
+    """自选股单行容器：接收单击选中与双击打开。"""
 
+    clicked = Signal()
     double_clicked = Signal()
 
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
-        self.double_clicked.emit()
+        if event.button() == Qt.LeftButton:
+            self.double_clicked.emit()
+            event.accept()
+            return
         super().mouseDoubleClickEvent(event)
 
 class _ListScrollArea(QScrollArea):
@@ -38,8 +49,9 @@ class _ListScrollArea(QScrollArea):
         return QSize(0, 0)
 
 class WatchListPanel(QWidget):
-    """自选股面板。对外只暴露 ``set_items`` 与 ``update_quotes`` 两个数据入口。"""
+    """自选股面板。数据入口为 ``set_items`` / ``update_quotes``，``set_selected`` 控制高亮。"""
 
+    item_clicked = Signal(str)         # 单击行时抛出股票代码，用于选中并展示分时
     item_double_clicked = Signal(str)  # 双击行时抛出股票代码，便于接入详情窗口
     layout_changed = Signal()          # 行数变化，提示窗口重新适配高度
 
@@ -63,7 +75,9 @@ class WatchListPanel(QWidget):
         super().__init__(parent)
 
         self._rows: dict[str, tuple[QLabel, QLabel, QLabel]] = {}
+        self._row_widgets: dict[str, _RowWidget] = {}
         self._items: list[WatchItem] = []
+        self._selected_code: str | None = None
 
         self._header = self._build_header()
 
@@ -97,6 +111,8 @@ class WatchListPanel(QWidget):
         self._clear_rows()
         for item in self._items:
             self._append_row(item)
+        # 重建行后恢复选中态（选中的股票可能已被删除，此时自然无高亮）
+        self.set_selected(self._selected_code)
         # 行数变化后必须让 Qt 丢弃缓存的高度提示，窗口才会重新适配高度
         self._body.updateGeometry()
         self._scroll.updateGeometry()
@@ -120,6 +136,21 @@ class WatchListPanel(QWidget):
         """清空所有行情数值，回到占位状态。"""
         for labels in self._rows.values():
             self._clear_row(*labels)
+
+    def set_selected(self, code: str | None) -> None:
+        """高亮指定股票；传入 None 清除全部高亮。"""
+        self._selected_code = code
+        for row_code, row in self._row_widgets.items():
+            selected = row_code == code
+            row.setStyleSheet(
+                f"background-color: {PALETTE.hover}; border-radius: 4px;"
+                if selected
+                else "background-color: transparent;"
+            )
+            name_label = self._rows[row_code][0]
+            name_label.setStyleSheet(
+                f"color: {PALETTE.accent if selected else PALETTE.text};"
+            )
 
     def items(self) -> list[WatchItem]:
         """返回当前自选股列表的副本。"""
@@ -146,6 +177,7 @@ class WatchListPanel(QWidget):
         return header
 
     def _clear_rows(self) -> None:
+        self._row_widgets.clear()
         for name_label, price_label, change_label in self._rows.values():
             for label in (name_label, price_label, change_label):
                 label.setParent(None)
@@ -158,9 +190,11 @@ class WatchListPanel(QWidget):
 
     def _append_row(self, item: WatchItem) -> None:
         row = _RowWidget(self._body)
+        row.setAttribute(Qt.WA_StyledBackground, True)
         row.setFixedHeight(ROW_HEIGHT)
         row.setCursor(Qt.PointingHandCursor)
         row.setToolTip(f"{item.name}（{item.code}）")
+        row.clicked.connect(lambda code=item.code: self.item_clicked.emit(code))
         row.double_clicked.connect(lambda code=item.code: self.item_double_clicked.emit(code))
 
         grid = QGridLayout(row)
@@ -180,6 +214,10 @@ class WatchListPanel(QWidget):
         change_label.setFont(numeric_font(11))
         change_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
+        # 点击落到整行上，避免点到文字时收不到选中事件
+        for label in (name_label, price_label, change_label):
+            label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
         grid.addWidget(name_label, 0, 0)
         grid.addWidget(price_label, 0, 1)
         grid.addWidget(change_label, 0, 2)
@@ -189,6 +227,7 @@ class WatchListPanel(QWidget):
 
         self._body_layout.insertWidget(self._body_layout.count() - 1, row)
         self._rows[item.code] = (name_label, price_label, change_label)
+        self._row_widgets[item.code] = row
 
     def _apply_row(self, quote: Quote, name: QLabel, price: QLabel, change: QLabel) -> None:
         color = color_for_direction(quote.direction)

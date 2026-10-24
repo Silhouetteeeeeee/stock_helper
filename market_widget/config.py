@@ -75,8 +75,17 @@ DEFAULT_WATCHLIST: list[WatchItem] = [
     WatchItem("600066", "宇通客车"),
 ]
 
-# 顶部展示的大盘指数
-INDEX_NAMES: tuple[str, ...] = ('上证指数','沪深300','科创50','创业板指','中证500','中证1000')
+# 顶部展示的大盘指数（代码, 名称）
+INDEX_ITEMS: tuple[tuple[str, str], ...] = (
+    ("sh000001", "上证指数"),
+    ("sh000300", "沪深300"),
+    ("sh000688", "科创50"),
+    ("sz399006", "创业板指"),
+    ("sh000905", "中证500"),
+    ("sh000852", "中证1000"),
+)
+INDEX_CODES: tuple[str, ...] = tuple(code for code, _ in INDEX_ITEMS)
+INDEX_NAMES: tuple[str, ...] = tuple(name for _, name in INDEX_ITEMS)
 
 # 指数面板每个单元格的固定宽度（像素），横向超出后可滚动
 INDEX_CELL_WIDTH = 90
