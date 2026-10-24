@@ -11,7 +11,14 @@ import json
 import os
 from dataclasses import dataclass
 
-from openai import DefaultHttpxClient, OpenAI
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    DefaultHttpxClient,
+    InternalServerError,
+    OpenAI,
+    RateLimitError,
+)
 
 from .citations import validate_citations
 from .models import Source, ToolResult
@@ -23,6 +30,8 @@ BASE_URL = "https://api.deepseek.com"
 MAX_ROUNDS = 6
 TEMPERATURE = 0.3
 TIMEOUT = 60.0
+# 只重试网络/超时/5xx/限流这类临时故障；鉴权、参数错误重试也没用
+RETRYABLE = (APIConnectionError, APITimeoutError, InternalServerError, RateLimitError)
 
 
 class AssistantError(Exception):
@@ -47,6 +56,8 @@ def build_client() -> OpenAI:
         api_key=api_key,
         base_url=BASE_URL,
         timeout=TIMEOUT,
+        # SDK 自己默认重试两次，会和 _create 的重试叠成好几轮
+        max_retries=0,
         # 和东财接口一样直连，绕开本机系统代理
         http_client=DefaultHttpxClient(trust_env=False),
     )
@@ -78,66 +89,80 @@ class ResearchAgent:
         return self.default_company
 
     def ask(self, question: str) -> Answer:
-        """问一个问题，跑完整个循环后返回结构化回答。"""
+        """问一个问题，跑完整个循环后返回结构化回答。
+
+        本轮失败时回滚这一轮的消息：交互模式放弃当前问题后，历史里不能
+        留下一条没有回答的 user 消息，否则模型会把两个问题混在一起。
+        """
+        start = len(self._history)
         self._history.append({"role": "user", "content": question})
         trace: list[dict] = []
         issues: list[dict] = []
         text = ""
         rounds = 0
 
-        while rounds < self.max_rounds:
-            messages = [self._system_message()] + self._history
-            response = self._create(messages)
-            rounds += 1
-            message = response.choices[0].message
-            content = getattr(message, "content", None) or ""
-            tool_calls = list(getattr(message, "tool_calls", None) or [])
-            if not tool_calls:
-                text = content
-                self._history.append({"role": "assistant", "content": text})
-                break
+        try:
+            while rounds < self.max_rounds:
+                messages = [self._system_message()] + self._history
+                response = self._create(messages)
+                rounds += 1
+                message = response.choices[0].message
+                content = getattr(message, "content", None) or ""
+                tool_calls = list(getattr(message, "tool_calls", None) or [])
+                if not tool_calls:
+                    text = content
+                    self._history.append({"role": "assistant", "content": text})
+                    break
 
-            self._history.append({
-                "role": "assistant",
-                "content": content,
-                "tool_calls": [
-                    {
-                        "id": call.id,
-                        "type": "function",
-                        "function": {
-                            "name": call.function.name,
-                            "arguments": call.function.arguments,
-                        },
-                    }
-                    for call in tool_calls
-                ],
-            })
-            for call in tool_calls:
-                name = call.function.name
-                arguments = _parse_arguments(call.function.arguments)
-                result = run_tool(name, arguments, self.default_company)
-                for source in result.sources:
-                    self._registry[source.id] = source
                 self._history.append({
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": result.to_message(),
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": [
+                        {
+                            "id": call.id,
+                            "type": "function",
+                            "function": {
+                                "name": call.function.name,
+                                "arguments": call.function.arguments,
+                            },
+                        }
+                        for call in tool_calls
+                    ],
                 })
-                trace.append({
-                    "round": rounds,
-                    "name": name,
-                    "arguments": arguments,
-                    "ok": result.ok,
-                    "company": result.company,
-                    "as_of": result.as_of,
-                    "error": result.error,
-                    "sources": [source.id for source in result.sources],
+                for call in tool_calls:
+                    name = call.function.name
+                    arguments = _parse_arguments(call.function.arguments)
+                    try:
+                        result = run_tool(name, arguments, self.default_company)
+                    except Exception as error:  # noqa: BLE001 - 每个 id 都必须有回执
+                        result = ToolResult(
+                            ok=False, error=f"工具执行失败：{error}"
+                        )
+                    for source in result.sources:
+                        self._registry[source.id] = source
+                    self._history.append({
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": result.to_message(),
+                    })
+                    trace.append({
+                        "round": rounds,
+                        "name": name,
+                        "arguments": arguments,
+                        "ok": result.ok,
+                        "company": result.company,
+                        "as_of": result.as_of,
+                        "error": result.error,
+                        "sources": [source.id for source in result.sources],
+                    })
+            else:
+                issues.append({
+                    "type": "rounds_exhausted",
+                    "message": f"研究轮次用尽（{self.max_rounds} 轮）",
                 })
-        else:
-            issues.append({
-                "type": "rounds_exhausted",
-                "message": f"研究轮次用尽（{self.max_rounds} 轮）",
-            })
+        except Exception:
+            del self._history[start:]
+            raise
 
         clean, citations, citation_issues = validate_citations(text, self._registry)
         issues.extend(citation_issues)
@@ -160,7 +185,7 @@ class ResearchAgent:
         }
 
     def _create(self, messages: list[dict]):
-        """调用模型；超时或 5xx 之类失败时原样重试一次。"""
+        """调用模型；临时故障重试一次，其余错误直接放弃。"""
         last_error: Exception | None = None
         for _ in range(2):
             try:
@@ -172,8 +197,10 @@ class ResearchAgent:
                     temperature=TEMPERATURE,
                     extra_body={"thinking": {"type": "enabled"}},
                 )
-            except Exception as error:  # noqa: BLE001 - 重试一次再决定是否放弃
+            except RETRYABLE as error:
                 last_error = error
+            except Exception as error:  # noqa: BLE001 - 鉴权/参数错误重试也没用
+                raise AssistantError(f"模型接口失败：{error}") from error
         raise AssistantError(f"模型接口失败：{last_error}")
 
 

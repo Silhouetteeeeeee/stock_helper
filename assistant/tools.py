@@ -124,22 +124,29 @@ def schemas() -> list[dict]:
 # 公司解析
 # ---------------------------------------------------------------------------
 def resolve_code(
-    query: str | None,
-    default: str | None,
+    query,
+    default,
 ) -> tuple[str | None, str | None, list[dict]]:
     """把输入解析成六位代码，返回 ``(code, error, candidates)``。
 
     ``query`` 为空时用 ``default``；两者都为空、代码无法识别、或简称
     找不到时返回错误，简称找不到还会带上模糊匹配的候选。
+    代码支持 ``605499``、``SH605499``、``605499.SH`` 三种写法。
     """
-    query = (query or "").strip()
-    default = (default or "").strip()
+    query, error = _company_text(query)
+    if error:
+        return None, error, []
+    default, error = _company_text(default)
+    if error:
+        return None, error, []
     if not query and not default:
         return None, "未指定公司：请先给出股票代码或简称", []
 
     value = query or default
-    if value.isdigit() and len(value) == 6:
-        prefix, digits = get_stock_prefix(value)
+    upper = value.upper()
+    prefix, digits = get_stock_prefix(upper)
+    # 只有整体就是代码的写法才按代码处理，避免简称里恰好有六位数字
+    if len(digits) == 6 and upper in (digits, f"{prefix}{digits}", f"{digits}.{prefix}"):
         if prefix not in ("SH", "SZ", "BJ"):
             return None, f"无法识别股票代码「{value}」", []
         return digits, None, []
@@ -167,17 +174,18 @@ def run_tool(
     arguments: dict,
     default_company: str | None = None,
 ) -> ToolResult:
-    """执行一个工具；任何失败都折成 ``ToolResult(ok=False)``。"""
-    arguments = arguments or {}
-
-    if name == "resolve_company":
-        return _resolve_company_tool(arguments)
-
-    code, error, _ = resolve_code(arguments.get("company"), default_company)
-    if code is None:
-        return ToolResult(ok=False, error=error or "无法识别公司")
-
+    """执行一个工具；任何失败都折成 ``ToolResult(ok=False)``，从不抛异常。"""
+    code = None
     try:
+        if not isinstance(arguments, dict):
+            arguments = {}
+        if name == "resolve_company":
+            return _resolve_company_tool(arguments)
+
+        code, error, _ = resolve_code(arguments.get("company"), default_company)
+        if code is None:
+            return ToolResult(ok=False, error=error or "无法识别公司")
+
         if name == "get_company_profile":
             return _company_profile(code)
         if name == "get_finance":
@@ -220,7 +228,7 @@ def _company_profile(code: str) -> ToolResult:
         label="公司概况",
         detail=f"{profile.get('name')} · {profile.get('industry')}",
         as_of=as_of,
-        fetched_at=f"{as_of} 00:00:00",
+        fetched_at=profile.get("fetched_at") or "",
     )
     data = {
         "name": profile.get("name"),
@@ -300,7 +308,9 @@ def _segments(code: str) -> ToolResult:
         piece = segments_from_rows(
             rows, kind=kind, code=code, name=name, stale=data.get("stale", False)
         )
-        if not piece.get("available"):
+        # segments_from_rows 在目标口径缺失时会回退到别的口径；
+        # 回退出来的产品数据不能再冒充地区切片
+        if not piece.get("available") or piece.get("kind") != kind:
             continue
         as_of = piece.get("as_of") or ""
         label = piece.get("kind_label") or ("产品" if key == "product" else "地区")
@@ -407,9 +417,10 @@ def _valuation(code: str) -> ToolResult:
     )
     payload = {
         "pe_ttm": pe.get("value"),
-        "pe_percentile": _pct100(pe.get("percentile")),
+        # valuation 的分位本来就是 0~100，不能再乘 100
+        "pe_percentile": _pct(pe.get("percentile")),
         "pb_mrq": pb.get("value"),
-        "pb_percentile": _pct100(pb.get("percentile")),
+        "pb_percentile": _pct(pb.get("percentile")),
         "years": pe.get("years") or pb.get("years"),
         "price": price.get("close"),
         "market_cap_yi": _yi(price.get("market_cap")),
@@ -455,9 +466,15 @@ def _pct(value):
     return None if value is None else round(value, 1)
 
 
-def _pct100(value):
-    """0-1 的分位 -> 百分数，保留一位。"""
-    return None if value is None else round(value * 100, 1)
+def _company_text(value) -> tuple[str, str | None]:
+    """把模型给的 ``company`` 规范成字符串；返回 ``(text, error)``。"""
+    if value is None:
+        return "", None
+    if isinstance(value, str):
+        return value.strip(), None
+    if type(value) is int:  # bool 不是股票代码
+        return str(value), None
+    return "", f"company 参数必须是字符串（收到 {type(value).__name__}）"
 
 
 def _clip(text: str, max_chars: int) -> str:

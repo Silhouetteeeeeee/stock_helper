@@ -131,6 +131,7 @@ def build_profile(
         "scope": row.get("scope"),
         "employees": row.get("employees"),
         "as_of": as_of,
+        "fetched_at": row.get("fetched_at") or "",
         "stale": result.get("stale", False),
         "sources": {SOURCE_LABEL: as_of},
         "summary": format_profile(row, code, as_of),

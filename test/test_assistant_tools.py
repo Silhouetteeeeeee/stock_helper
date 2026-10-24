@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import assistant.tools as tools
 from common.stock import Stock
+from stock.valuation import valuation_from_rows
 
 
 def fake_snapshot(code: str, **kwargs) -> dict:
@@ -80,6 +81,13 @@ def test_resolve_company() -> None:
 
         missing = tools.run_tool("get_finance", {})
         assert missing.ok is False and "未指定公司" in missing.error, missing
+
+        # 带前缀/后缀的代码也是用户会直接输入的写法
+        for value in ("SH605499", "sh605499", "605499.SH"):
+            code, error, _ = tools.resolve_code(value, None)
+            assert code == "605499" and error is None, (value, code, error)
+        code, error, _ = tools.resolve_code("60549", None)
+        assert code is None, (code, error)
     finally:
         tools.get_stock_by_name, tools.get_all_stocks, tools.get_stock = originals  # type: ignore[assignment]
 
@@ -115,7 +123,7 @@ def test_profile_tool() -> None:
         "available": True, "code": code, "name": "东鹏饮料",
         "industry": "食品饮料", "profile": "能量饮料",
         "scope": "食品生产…", "employees": 12376,
-        "as_of": "2026-10-24",
+        "as_of": "2026-10-24", "fetched_at": "2026-10-24 09:31:02",
         "sources": {"东方财富 F10 公司概况": "2026-10-24"},
     }  # type: ignore[assignment]
     try:
@@ -124,7 +132,7 @@ def test_profile_tool() -> None:
         tools.build_profile = original  # type: ignore[assignment]
     assert result.ok is True
     assert result.sources[0].id == "profile:605499"
-    assert result.data["employees"] == 12376
+    assert result.sources[0].fetched_at == "2026-10-24 09:31:02", result.sources[0]
 
 
 def fake_segments(rows, kind=None, code=None, name=None, stale=False) -> dict:
@@ -219,26 +227,78 @@ def test_announcements_sources() -> None:
 
 
 def test_valuation() -> None:
+    # 用真实 valuation_from_rows 产出喂给工具：分位是 0~100 的百分数
+    history = [
+        {"code": "605499", "name": "东鹏饮料", "trade_date": "2026-10-20",
+         "pe_ttm": 40.0, "pb_mrq": 4.0, "close": 95.0, "total_mv": 7.0e10,
+         "fetched_at": "2026-10-24 16:27:38"},
+        {"code": "605499", "name": "东鹏饮料", "trade_date": "2026-10-21",
+         "pe_ttm": 10.0, "pb_mrq": 1.0, "close": 99.0, "total_mv": 7.2e10,
+         "fetched_at": "2026-10-24 16:27:38"},
+        {"code": "605499", "name": "东鹏饮料", "trade_date": "2026-10-22",
+         "pe_ttm": 20.0, "pb_mrq": 2.0, "close": 104.0, "total_mv": 7.6e10,
+         "fetched_at": "2026-10-24 16:27:38"},
+        {"code": "605499", "name": "东鹏饮料", "trade_date": "2026-10-23",
+         "pe_ttm": 30.0, "pb_mrq": 3.0, "close": 104.48, "total_mv": 76709143908.8,
+         "fetched_at": "2026-10-24 16:27:38"},
+    ]
+    reference = valuation_from_rows(history, name="东鹏饮料")
+    expected = reference["valuation"]["pe_ttm"]["percentile"]
+    assert expected == 75.0, reference["valuation"]
+
     original = tools.build_valuation
-    tools.build_valuation = lambda code, **kwargs: {
-        "available": True, "code": code, "name": "东鹏饮料",
-        "as_of": "2026-10-23", "fetched_at": "2026-10-24 16:27:38",
-        "price": {"close": 104.48, "market_cap": 76709143908.8},
-        "valuation": {
-            "pe_ttm": {"value": 15.63, "percentile": 0.2475, "years": 5},
-            "pb_mrq": {"value": 3.94, "percentile": 0.2475, "years": 5},
-        },
-        "industry": {"board": "饮料乳品", "count": 28, "median_pe": 24.0,
-                     "rank_pe": 4, "rank_total": 21},
-    }  # type: ignore[assignment]
+    tools.build_valuation = lambda code, **kwargs: valuation_from_rows(
+        history, name="东鹏饮料"
+    )  # type: ignore[assignment]
     try:
         result = tools.run_tool("get_valuation", {}, default_company="605499")
     finally:
         tools.build_valuation = original  # type: ignore[assignment]
     assert result.ok is True
-    assert result.data["pe_ttm"] == 15.63
-    assert result.data["pe_percentile"] == 24.8, result.data
+    assert result.data["pe_ttm"] == 30.0
+    assert result.data["pe_percentile"] == expected, result.data
+    assert result.data["pb_percentile"] == expected, result.data
     assert result.sources[0].id == "valuation:605499:2026-10-23"
+
+
+def test_segments_kind_fallback_not_relabeled() -> None:
+    """只有产品口径时，地区切片不能被回退出来的产品数据冒充。"""
+    rows = [
+        {"code": "605499", "report_date": "2026-06-30", "kind": "2",
+         "item_name": "能量饮料", "income": 8936615605.76, "share": 71.82,
+         "gross_margin": 54.67, "fetched_at": "2026-10-24 15:57:57"},
+        {"code": "605499", "report_date": "2026-06-30", "kind": "2",
+         "item_name": "其他饮料", "income": 3506420950.0, "share": 28.18,
+         "gross_margin": 30.1, "fetched_at": "2026-10-24 15:57:57"},
+    ]
+    originals = (tools.ensure_segments, tools.get_stock)
+    tools.ensure_segments = lambda code, **kw: {"rows": rows, "stale": False}  # type: ignore[assignment]
+    tools.get_stock = lambda code: Stock(code, "东鹏饮料")  # type: ignore[assignment]
+    try:
+        result = tools.run_tool("get_segments", {}, default_company="605499")
+    finally:
+        tools.ensure_segments, tools.get_stock = originals  # type: ignore[assignment]
+
+    assert result.ok is True, result
+    assert [slice_["kind"] for slice_ in result.data["slices"]] == ["product"], result.data
+    assert [source.id for source in result.sources] == [
+        "segments:605499:2026-06-30:product",
+    ], result.sources
+
+
+def test_malformed_arguments_are_observations() -> None:
+    # schema 说是 string，模型偶尔给数字：能认出来就照常解析
+    assert tools.resolve_code(600519, None) == ("600519", None, [])
+
+    # 其他类型不能把循环炸掉，要变成给模型的观察结果
+    result = tools.run_tool(
+        "get_finance", {"company": ["600519"]}, default_company="605499"
+    )
+    assert result.ok is False and "必须是字符串" in result.error, result
+
+    # arguments 本身不是对象时同样按空参数处理
+    result = tools.run_tool("resolve_company", ["not", "a", "dict"])
+    assert result.ok is False and result.error, result
 
 
 def test_tool_error_is_observation() -> None:
@@ -265,6 +325,8 @@ def main() -> None:
     test_segments_region_missing()
     test_announcements_sources()
     test_valuation()
+    test_segments_kind_fallback_not_relabeled()
+    test_malformed_arguments_are_observations()
     test_tool_error_is_observation()
     print("PASS")
     sys.stdout.flush()

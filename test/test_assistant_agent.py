@@ -7,10 +7,36 @@ import os
 import sys
 from types import SimpleNamespace
 
+import httpx2
+from openai import APITimeoutError, AuthenticationError
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import assistant.agent as agent_mod
 from assistant.models import Source, ToolResult
+
+REQUEST = httpx2.Request("POST", "https://api.deepseek.com/chat/completions")
+
+
+def timeout_error() -> APITimeoutError:
+    return APITimeoutError(request=REQUEST)
+
+
+class FlakyClient:
+    """前 ``failures`` 次调用抛超时，之后按脚本返回。"""
+
+    def __init__(self, responses, failures=0):
+        self.calls = []
+        self.failures = failures
+        self._responses = list(responses)
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+    def _create(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.failures:
+            self.failures -= 1
+            raise timeout_error()
+        return self._responses.pop(0)
 
 FIN = Source("finance:605499:2026-06-30", "财报", "东鹏饮料 2026-06-30",
              "2026-06-30", "2026-10-24 15:57:57")
@@ -174,31 +200,106 @@ def test_comparison_sources() -> None:
 
 
 def test_retry_once() -> None:
-    class FlakyClient(FakeClient):
-        def __init__(self, responses, failures=1):
-            super().__init__(responses)
-            self.failures = failures
-
-        def _create(self, **kwargs):
-            if self.failures:
-                self.failures -= 1
-                raise RuntimeError("接口超时")
-            return super()._create(**kwargs)
-
-    client = FlakyClient([response(content="每年卖出几十亿瓶饮料。")])
+    client = FlakyClient([response(content="每年卖出几十亿瓶饮料。")], failures=1)
     answer = agent_mod.ResearchAgent(client, default_company="605499").ask("靠什么赚钱")
     assert answer.text == "每年卖出几十亿瓶饮料。"
     assert answer.rounds == 1
-    assert len(client.calls) == 1
+    assert len(client.calls) == 2  # 第一次超时，重试成功
 
     dead = FlakyClient([], failures=2)
     try:
         agent_mod.ResearchAgent(dead, default_company="605499").ask("靠什么赚钱")
     except agent_mod.AssistantError as error:
-        assert "接口超时" in str(error)
+        assert "接口失败" in str(error)
         assert "DEEPSEEK_API_KEY" not in str(error)
     else:
         raise AssertionError("两次失败应抛 AssistantError")
+    assert len(dead.calls) == 2
+
+
+def test_non_transient_error_is_not_retried() -> None:
+    response_401 = httpx2.Response(401, request=REQUEST)
+    calls = {"count": 0}
+
+    class AuthClient(FakeClient):
+        def _create(self, **kwargs):
+            calls["count"] += 1
+            raise AuthenticationError(
+                "invalid api key", response=response_401, body=None
+            )
+
+    client = AuthClient([])
+    try:
+        agent_mod.ResearchAgent(client, default_company="605499").ask("靠什么赚钱")
+    except agent_mod.AssistantError as error:
+        assert "invalid api key" in str(error)
+    else:
+        raise AssertionError("鉴权失败应抛 AssistantError")
+    assert calls["count"] == 1, calls
+
+
+def test_build_client_disables_sdk_retries() -> None:
+    original = os.environ.get("DEEPSEEK_API_KEY")
+    os.environ["DEEPSEEK_API_KEY"] = "test-key"
+    try:
+        client = agent_mod.build_client()
+    finally:
+        if original is None:
+            os.environ.pop("DEEPSEEK_API_KEY", None)
+        else:
+            os.environ["DEEPSEEK_API_KEY"] = original
+    try:
+        assert client.max_retries == 0, client.max_retries
+    finally:
+        client.close()
+
+
+def test_tool_exception_becomes_observation() -> None:
+    client = FakeClient([
+        response(tool_calls=[tool_call("c1", "get_finance", {})]),
+        response(content="工具坏了，资料不足。"),
+    ])
+    original = agent_mod.run_tool
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("数据库被占用")
+
+    agent_mod.run_tool = broken  # type: ignore[assignment]
+    try:
+        answer = agent_mod.ResearchAgent(
+            client, default_company="605499"
+        ).ask("靠什么赚钱")
+    finally:
+        agent_mod.run_tool = original  # type: ignore[assignment]
+
+    assert answer.text == "工具坏了，资料不足。"
+    tool_messages = [
+        message for message in client.calls[1]["messages"] if message["role"] == "tool"
+    ]
+    assert len(tool_messages) == 1, tool_messages
+    assert tool_messages[0]["tool_call_id"] == "c1"
+    assert "数据库被占用" in tool_messages[0]["content"]
+    assert answer.trace[0]["ok"] is False
+
+
+def test_api_failure_rolls_back_history() -> None:
+    client = FlakyClient([response(content="它卖能量饮料。")], failures=2)
+    research = agent_mod.ResearchAgent(client, default_company="605499")
+    try:
+        research.ask("被放弃的问题")
+    except agent_mod.AssistantError:
+        pass
+    else:
+        raise AssertionError("两次失败应抛 AssistantError")
+
+    answer = research.ask("真正的问题")
+    assert answer.text == "它卖能量饮料。"
+    history = [
+        message.get("content")
+        for message in client.calls[-1]["messages"]
+        if message.get("role") == "user"
+    ]
+    assert history == ["真正的问题"], history
 
 
 def test_prompt_has_concrete_citation_example() -> None:
@@ -242,6 +343,10 @@ def main() -> None:
     test_tool_error_observation_and_multi_turn()
     test_comparison_sources()
     test_retry_once()
+    test_non_transient_error_is_not_retried()
+    test_build_client_disables_sdk_retries()
+    test_tool_exception_becomes_observation()
+    test_api_failure_rolls_back_history()
     test_prompt_has_concrete_citation_example()
     test_use_company()
     print("PASS")

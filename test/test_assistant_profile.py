@@ -79,15 +79,18 @@ def test_cache() -> None:
 
 def test_build() -> None:
     original = cp.ensure_profile
-    cp.ensure_profile = lambda code, **kwargs: {  # type: ignore[assignment]
-        "data": cp.profile_from_payload(PAYLOAD, code),
-        "stale": False,
-    }
-    profile = cp.build_profile(CODE)
-    cp.ensure_profile = original  # type: ignore[assignment]
+    row = cp.profile_from_payload(PAYLOAD, CODE)
+    row["fetched_at"] = "2026-10-24 09:31:02"
+    cp.ensure_profile = lambda code, **kwargs: {"data": row, "stale": False}  # type: ignore[assignment]
+    try:
+        profile = cp.build_profile(CODE)
+    finally:
+        cp.ensure_profile = original  # type: ignore[assignment]
     assert profile["available"] is True
     assert profile["code"] == CODE and profile["name"] == "东鹏饮料"
     assert profile["sources"]["东方财富 F10 公司概况"]
+    # 引用里的抓取时间要来自真实抓取，不能由 as_of 拼一个出来
+    assert profile["fetched_at"] == "2026-10-24 09:31:02", profile
 
 
 def main() -> None:
