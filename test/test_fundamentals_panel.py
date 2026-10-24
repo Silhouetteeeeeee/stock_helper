@@ -18,8 +18,11 @@ from PySide6.QtWidgets import QApplication
 from market_widget.theme import PALETTE
 from market_widget.ui.fundamentals import (
     ALERT_MAX_WIDTH,
+    ANNOUNCEMENT_LINKS,
     MAX_ALERTS,
     FundamentalsPanel,
+    _link_text,
+    _panel_announcements,
     _shorten,
 )
 
@@ -34,6 +37,24 @@ BRIEFING = {
         {"level": "warning", "text": "单季营收同比增速连续 5 个季度放缓，毛利率也在同步下滑"},
         {"level": "info", "text": "净现金状态"},
         {"level": "info", "text": "第三条提示不该出现"},
+    ],
+}
+
+ANNOUNCEMENTS = {
+    "available": True,
+    "days": 90,
+    "count": 5,
+    "items": [
+        {"date": "2026-10-17", "title": "H股公告-董事会会议通告", "tags": [],
+         "url": "https://example.invalid/AN5"},
+        {"date": "2026-10-10", "title": "关于以集中竞价交易方式回购A股股份的进展公告",
+         "tags": ["回购"], "url": "https://example.invalid/AN4"},
+        {"date": "2026-09-18", "title": "2026年半年度权益分派实施公告",
+         "tags": ["分红"], "url": "https://example.invalid/AN3"},
+        {"date": "2026-09-01", "title": "关于股东减持股份的预披露公告",
+         "tags": ["减持"], "url": "https://example.invalid/AN2"},
+        {"date": "2026-08-20", "title": "2026年半年度报告摘要", "tags": [],
+         "url": "https://example.invalid/AN1"},
     ],
 }
 
@@ -97,6 +118,57 @@ def main() -> None:
     assert panel.toolTip() == "", panel.toolTip()
     panel.show_briefing({"available": False, "summary": "基本面数据获取失败"})
     assert panel.toolTip() == "", panel.toolTip()
+
+    # -- 公告链接：优先带标签的事件，点击交给系统浏览器 ---------------------
+    panel.show_briefing(dict(BRIEFING, announcements=ANNOUNCEMENTS))
+    linked = panel.text()
+    assert "近期公告（点击查看）" in linked, linked
+    assert linked.count("<a href=") == ANNOUNCEMENT_LINKS, linked
+    assert 'href="https://example.invalid/AN4"' in linked, linked
+    assert "10-10 [回购]" in linked, linked
+    assert "09-18 [分红]" in linked, linked
+    assert "09-01 [减持]" in linked, linked
+    # 没有标签的普通公告被挤到后面，只有三条链接
+    assert "AN5" not in linked, linked
+    assert panel._body.openExternalLinks() is True
+
+    # 标题与 URL 都要转义，不能把缓存里的内容当富文本执行
+    unsafe = {
+        "available": True,
+        "days": 90,
+        "count": 1,
+        "items": [{
+            "date": "2026-10-10",
+            "title": "<b>不该加粗</b>",
+            "tags": [],
+            "url": 'https://example.invalid/"><b>',
+        }],
+    }
+    panel.show_briefing({"available": True, "lines": [], "alerts": [], "announcements": unsafe})
+    escaped = panel.text()
+    assert "<b>不该加粗</b>" not in escaped, escaped
+    assert "&lt;b&gt;不该加粗&lt;/b&gt;" in escaped, escaped
+    assert '"><b>' not in escaped, escaped
+
+    # 公告区域可以关掉
+    panel.show_briefing(dict(BRIEFING, announcements={"available": False}))
+    assert "近期公告" not in panel.text(), panel.text()
+
+    # 标签去重：同类只留最新一条；不足时用最新普通公告补齐
+    picked = _panel_announcements(ANNOUNCEMENTS, 3)
+    assert [item["date"] for item in picked] == ["2026-10-10", "2026-09-18", "2026-09-01"]
+    repeated = {
+        "items": [
+            {"date": "2026-10-10", "title": "回购一", "tags": ["回购"], "url": "u1"},
+            {"date": "2026-09-10", "title": "回购二", "tags": ["回购"], "url": "u2"},
+            {"date": "2026-10-17", "title": "普通公告", "tags": [], "url": "u3"},
+            {"date": "2026-10-01", "title": "另一条", "tags": [], "url": "u4"},
+        ],
+    }
+    picked_repeat = _panel_announcements(repeated, 3)
+    assert [item["url"] for item in picked_repeat] == ["u3", "u1", "u4"], picked_repeat
+    assert _link_text(ANNOUNCEMENTS["items"][1]).startswith("10-10 [回购] 关于"), \
+        _link_text(ANNOUNCEMENTS["items"][1])
 
     # -- _shorten 按显示宽度截断（汉字算 2） --------------------------------
     assert _shorten("短句", 34) == "短句"

@@ -106,6 +106,36 @@ def make_segments(flags: list[dict] | None = None, available: bool = True) -> di
     }
 
 
+def make_announcements(flags: list[dict] | None = None, available: bool = True) -> dict:
+    items = [
+        {"art_code": "AN3", "date": "2026-10-10",
+         "title": "关于以集中竞价交易方式回购A股股份的进展公告",
+         "categories": ["回购进展情况"], "tags": ["回购"], "level": "info",
+         "url": "https://example.invalid/AN3"},
+        {"art_code": "AN2", "date": "2026-09-01",
+         "title": "关于股东减持股份的预披露公告",
+         "categories": ["股东减持"], "tags": ["减持"], "level": "warning",
+         "url": "https://example.invalid/AN2"},
+        {"art_code": "AN1", "date": "2026-08-20",
+         "title": "2026年半年度权益分派实施公告",
+         "categories": ["分配方案实施"], "tags": ["分红"], "level": "info",
+         "url": "https://example.invalid/AN1"},
+    ]
+    return {
+        "available": available,
+        "code": CODE,
+        "name": NAME,
+        "days": 90,
+        "as_of": "2026-10-10",
+        "count": len(items),
+        "items": items,
+        "flags": flags or [],
+        "stale": False,
+        "sources": {"公告": "测试源"},
+        "summary": "公告测试",
+    }
+
+
 def text_of(briefing: dict) -> str:
     return "\n".join(briefing["lines"])
 
@@ -212,6 +242,60 @@ def main() -> None:
     ], seg_error["alerts"]
     assert "主营 能量饮料" not in text_of(seg_error), text_of(seg_error)
 
+    # -- 公告：不进指标行，明细与提示单独给出 -------------------------------
+    announcements = make_announcements()
+    with_announcements = br.briefing_from(
+        make_snapshot(), make_valuation(), make_segments(), announcements
+    )
+    assert with_announcements["announcements"] is announcements, with_announcements
+    assert with_announcements["sources"]["公告"] == "测试源", with_announcements["sources"]
+    # 面板底部会把公告渲染成链接，指标行不再重复一行标签摘要
+    assert not any("公告" in line for line in with_announcements["lines"]), \
+        with_announcements["lines"]
+    assert len(with_announcements["lines"]) == 6, with_announcements["lines"]
+
+    rendered_announcements = with_announcements["summary"]
+    assert "近期公告（近 90 天 3 条）：" in rendered_announcements, rendered_announcements
+    assert (
+        "- 2026-10-10 [回购] 关于以集中竞价交易方式回购A股股份的进展公告"
+        in rendered_announcements
+    ), rendered_announcements
+
+    # 没有可归类标签的公告照列，只是不带方括号标签
+    untagged = make_announcements()
+    for item in untagged["items"]:
+        item["tags"], item["level"] = [], None
+    untagged_briefing = br.briefing_from(make_snapshot(), None, None, untagged)
+    assert "- 2026-10-10 关于以集中竞价交易方式回购A股股份的进展公告" \
+        in untagged_briefing["summary"], untagged_briefing["summary"]
+
+    # 不可用时不写进结构
+    no_ann = br.briefing_from(
+        make_snapshot(), None, None, make_announcements(available=False)
+    )
+    assert no_ann["announcements"] is None, no_ann
+
+    # 提示顺序：财报 → 主营 → 公告 → 估值
+    ordered_all = br.briefing_from(
+        make_snapshot(flags=[{"level": "info", "message": "现金流转弱"}]),
+        make_valuation(flags=[{"level": "warning", "message": "PE 高位"}]),
+        make_segments(flags=[{"level": "warning", "message": "主业收入下滑"}]),
+        make_announcements(flags=[{"level": "warning", "message": "10-10 减持：公告"}]),
+    )
+    assert [alert["text"] for alert in ordered_all["alerts"]] == [
+        "现金流转弱",
+        "主业收入下滑",
+        "10-10 减持：公告",
+        "PE 高位",
+    ], ordered_all["alerts"]
+
+    # 公告接口失败：只多一条提示
+    ann_error = br.briefing_from(
+        make_snapshot(), None, None, None, announcements_error="公告超时"
+    )
+    assert ann_error["alerts"] == [{"level": "info", "text": "公告数据暂不可用"}], ann_error
+    assert ann_error["announcements"] is None, ann_error
+
     # -- 两份摘要的提示合并，纯文本里带级别 ---------------------------------
     snapshot["flags"] = [
         {"level": "warning", "code": "revenue_flat", "message": "单季营收连续两期放缓"},
@@ -232,8 +316,8 @@ def main() -> None:
     empty = br.briefing_from(None, None)
     assert empty["available"] is False, empty
     assert empty["lines"] == [] and empty["alerts"] == []
-    assert "暂无财报、主营与估值数据" in empty["summary"], empty
-    assert "暂无财报、主营与估值数据" in br.format_briefing(empty)
+    assert "暂无财报、主营、公告与估值数据" in empty["summary"], empty
+    assert "暂无财报、主营、公告与估值数据" in br.format_briefing(empty)
 
     # -- 估值接口挂了：财报照常展示，只多一条提示 --------------------------
     snapshot["flags"] = []
@@ -256,17 +340,25 @@ def main() -> None:
         calls["segments"] = calls.get("segments", 0) + 1
         return make_segments()
 
+    def fake_announcements(code, **kwargs):
+        calls["announcements"] = calls.get("announcements", 0) + 1
+        return make_announcements()
+
     br.build_snapshot = fake_snapshot  # type: ignore[assignment]
     br.build_valuation = broken_valuation  # type: ignore[assignment]
     br.build_segments = fake_segments  # type: ignore[assignment]
+    br.build_announcements = fake_announcements  # type: ignore[assignment]
 
     result = br.build_briefing(CODE)
     assert calls["snapshot"] == 1, calls
     assert calls["segments"] == 1, calls
+    assert calls["announcements"] == 1, calls
     assert result["available"] is True
     assert "PE 15.63" not in text_of(result), text_of(result)
     assert result["alerts"][-1]["text"] == "估值数据暂不可用", result["alerts"]
     assert result["lines"][1] == "主营 能量饮料 72% · 电解质饮料 13%", result["lines"]
+    assert result["announcements"] is not None, result
+    assert not any("公告" in line for line in result["lines"]), result["lines"]
 
     # 主营接口挂了同样只降级自己
     def broken_segments(*args, **kwargs):
@@ -276,6 +368,18 @@ def main() -> None:
     degraded_segments = br.build_briefing(CODE)
     assert degraded_segments["alerts"][0]["text"] == "主营构成暂不可用", degraded_segments
     assert not any(line.startswith("主营 ") for line in degraded_segments["lines"])
+
+    # 公告接口挂了也只降级自己
+    def broken_announcements(*args, **kwargs):
+        raise br.AnnouncementError("公告接口超时")
+
+    br.build_announcements = broken_announcements  # type: ignore[assignment]
+    degraded_announcements = br.build_briefing(CODE)
+    assert any(
+        alert["text"] == "公告数据暂不可用"
+        for alert in degraded_announcements["alerts"]
+    ), degraded_announcements["alerts"]
+    assert degraded_announcements["announcements"] is None, degraded_announcements
 
     try:
         br.build_briefing("")
