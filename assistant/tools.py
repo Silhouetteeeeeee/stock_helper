@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import copy
 
+from stock.announcements import build_announcements
 from stock.db_service import get_all_stocks, get_stock, get_stock_by_name
 from stock.finance_snapshot import build_snapshot
+from stock.segments import ensure_segments, segments_from_rows
 from stock.utils import get_stock_prefix
+from stock.valuation import build_valuation
 
 from .company_profile import build_profile
 from .models import Source, ToolResult
@@ -179,6 +182,12 @@ def run_tool(
             return _company_profile(code)
         if name == "get_finance":
             return _finance(code)
+        if name == "get_segments":
+            return _segments(code)
+        if name == "get_announcements":
+            return _announcements(code, arguments)
+        if name == "get_valuation":
+            return _valuation(code)
         return ToolResult(ok=False, company=code, error=f"未知工具：{name}")
     except Exception as error:  # noqa: BLE001 - 数据层异常统一交给模型处理
         return ToolResult(ok=False, company=code, error=str(error))
@@ -276,6 +285,154 @@ def _finance(code: str) -> ToolResult:
     return ToolResult(ok=True, company=code, as_of=period, sources=(source,), data=data)
 
 
+def _segments(code: str) -> ToolResult:
+    data = ensure_segments(code)
+    rows = data.get("rows") or []
+    if not rows:
+        return ToolResult(ok=False, company=code, error=f"{code}：没有主营构成数据")
+
+    stock = get_stock(code)
+    name = stock.name if stock is not None else None
+    fetched_at = max((row.get("fetched_at") or "" for row in rows), default="")
+    slices: list[dict] = []
+    sources: list[Source] = []
+    for kind, key in (("2", "product"), ("3", "region")):
+        piece = segments_from_rows(
+            rows, kind=kind, code=code, name=name, stale=data.get("stale", False)
+        )
+        if not piece.get("available"):
+            continue
+        as_of = piece.get("as_of") or ""
+        label = piece.get("kind_label") or ("产品" if key == "product" else "地区")
+        slices.append({
+            "kind": key,
+            "label": label,
+            "total_income_yi": _yi(piece.get("total_income")),
+            "items": [
+                {
+                    "name": item.get("name"),
+                    "income_yi": _yi(item.get("income")),
+                    "share": _pct(item.get("share")),
+                    "yoy": _pct(item.get("yoy")),
+                    "gross_margin": _pct(item.get("gross_margin")),
+                }
+                for item in piece.get("items") or []
+            ],
+        })
+        sources.append(Source(
+            id=f"segments:{code}:{as_of}:{key}",
+            label=f"主营构成·{label}",
+            detail=f"{name} {as_of} 按{label}",
+            as_of=as_of,
+            fetched_at=fetched_at,
+        ))
+
+    if not slices:
+        return ToolResult(ok=False, company=code, error=f"{code}：没有可用的主营构成")
+    as_of = sources[0].as_of
+    return ToolResult(
+        ok=True,
+        company=code,
+        as_of=as_of,
+        sources=tuple(sources),
+        data={"code": code, "name": name, "as_of": as_of, "slices": slices},
+    )
+
+
+def _announcements(code: str, arguments: dict) -> ToolResult:
+    try:
+        days = int(arguments.get("days") or 180)
+    except (TypeError, ValueError):
+        days = 180
+    days = min(max(days, 1), 365)
+
+    data = build_announcements(code, days=days)
+    if not data.get("available"):
+        return ToolResult(ok=False, company=code, error=f"{code}：近 {days} 天没有公告")
+
+    items: list[dict] = []
+    sources: list[Source] = []
+    for item in (data.get("items") or [])[:20]:
+        items.append({
+            "date": item.get("date"),
+            "title": item.get("title"),
+            "tags": item.get("tags") or [],
+            "level": item.get("level"),
+        })
+        art_code = item.get("art_code") or "-"
+        sources.append(Source(
+            id=f"announcement:{code}:{item.get('date')}:{art_code}",
+            label="公告",
+            detail=_clip(item.get("title") or "", 60),
+            as_of=item.get("date") or "",
+            # 公告摘要没有带出抓取时间，引用里留空，不假装是刚抓的
+            fetched_at="",
+            url=item.get("url") or "",
+        ))
+
+    as_of = data.get("as_of")
+    return ToolResult(
+        ok=True,
+        company=code,
+        as_of=as_of,
+        sources=tuple(sources),
+        data={
+            "code": code,
+            "name": data.get("name"),
+            "days": days,
+            "as_of": as_of,
+            "items": items,
+        },
+    )
+
+
+def _valuation(code: str) -> ToolResult:
+    data = build_valuation(code)
+    if not data.get("available"):
+        return ToolResult(ok=False, company=code, error=f"{code}：没有估值数据")
+
+    valuation = data.get("valuation") or {}
+    pe = valuation.get("pe_ttm") or {}
+    pb = valuation.get("pb_mrq") or {}
+    industry = data.get("industry") or {}
+    price = data.get("price") or {}
+    as_of = data.get("as_of") or ""
+    name = data.get("name")
+    source = Source(
+        id=f"valuation:{code}:{as_of}",
+        label="估值",
+        detail=f"{name} {as_of} 估值",
+        as_of=as_of,
+        fetched_at=data.get("fetched_at") or "",
+    )
+    payload = {
+        "pe_ttm": pe.get("value"),
+        "pe_percentile": _pct100(pe.get("percentile")),
+        "pb_mrq": pb.get("value"),
+        "pb_percentile": _pct100(pb.get("percentile")),
+        "years": pe.get("years") or pb.get("years"),
+        "price": price.get("close"),
+        "market_cap_yi": _yi(price.get("market_cap")),
+        "industry": {
+            "board": industry.get("board"),
+            "count": industry.get("count"),
+            "median_pe": industry.get("median_pe"),
+            "median_pb": industry.get("median_pb"),
+            "rank_pe": industry.get("rank_pe"),
+            "rank_total": industry.get("rank_total"),
+        },
+        "peers": [
+            {
+                "name": peer.get("name"),
+                "pe_ttm": peer.get("pe_ttm"),
+                "pb_mrq": peer.get("pb_mrq"),
+            }
+            for peer in (industry.get("peers") or [])[:5]
+        ],
+    }
+    return ToolResult(ok=True, company=code, as_of=as_of, sources=(source,), data=payload)
+
+
 # ---------------------------------------------------------------------------
 # 小工具
 # ---------------------------------------------------------------------------
@@ -296,3 +453,15 @@ def _yi(value):
 def _pct(value):
     """百分比保留一位。"""
     return None if value is None else round(value, 1)
+
+
+def _pct100(value):
+    """0-1 的分位 -> 百分数，保留一位。"""
+    return None if value is None else round(value * 100, 1)
+
+
+def _clip(text: str, max_chars: int) -> str:
+    text = (text or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip("，、；： ") + "…"

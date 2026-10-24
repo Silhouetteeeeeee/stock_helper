@@ -127,11 +127,145 @@ def test_profile_tool() -> None:
     assert result.data["employees"] == 12376
 
 
+def fake_segments(rows, kind=None, code=None, name=None, stale=False) -> dict:
+    if kind == "3" and not REGION:
+        return {"available": False}
+    items = ([{"name": "能量饮料", "income": 8936615605.76, "share": 71.82,
+               "yoy": 6.89, "gross_margin": 54.67, "is_other": False}]
+             if kind == "2" else
+             [{"name": "华南", "income": 5000000000.0, "share": 40.2,
+               "yoy": 9.1, "gross_margin": None, "is_other": False}])
+    return {
+        "available": True, "code": code, "name": name,
+        "as_of": "2026-06-30", "kind": kind,
+        "kind_label": "产品" if kind == "2" else "地区",
+        "total_income": 12443036555.29, "items": items,
+    }
+
+
+REGION = True
+
+
+def test_segments_two_slices() -> None:
+    rows = [{"code": "605499", "fetched_at": "2026-10-24 15:57:57"}]
+    originals = (tools.ensure_segments, tools.segments_from_rows, tools.get_stock)
+    tools.ensure_segments = lambda code, **kw: {"rows": rows, "stale": False}  # type: ignore[assignment]
+    tools.segments_from_rows = fake_segments  # type: ignore[assignment]
+    tools.get_stock = lambda code: Stock(code, "东鹏饮料")  # type: ignore[assignment]
+    try:
+        result = tools.run_tool("get_segments", {}, default_company="605499")
+    finally:
+        tools.ensure_segments, tools.segments_from_rows, tools.get_stock = originals  # type: ignore[assignment]
+
+    assert result.ok is True, result
+    ids = [source.id for source in result.sources]
+    assert ids == [
+        "segments:605499:2026-06-30:product",
+        "segments:605499:2026-06-30:region",
+    ], ids
+    assert [slice_["label"] for slice_ in result.data["slices"]] == ["产品", "地区"], result.data
+
+
+def test_segments_region_missing() -> None:
+    global REGION
+    REGION = False
+    rows = [{"code": "605499", "fetched_at": "2026-10-24 15:57:57"}]
+    originals = (tools.ensure_segments, tools.segments_from_rows, tools.get_stock)
+    tools.ensure_segments = lambda code, **kw: {"rows": rows, "stale": False}  # type: ignore[assignment]
+    tools.segments_from_rows = fake_segments  # type: ignore[assignment]
+    tools.get_stock = lambda code: Stock(code, "东鹏饮料")  # type: ignore[assignment]
+    try:
+        result = tools.run_tool("get_segments", {}, default_company="605499")
+    finally:
+        REGION = True
+        tools.ensure_segments, tools.segments_from_rows, tools.get_stock = originals  # type: ignore[assignment]
+    assert [source.id.split(":")[-1] for source in result.sources] == ["product"], result.sources
+
+
+def test_announcements_sources() -> None:
+    original = tools.build_announcements
+    captured = {}
+
+    def fake_announcements(code: str, **kwargs) -> dict:
+        captured.update(kwargs)
+        return {
+            "available": True, "code": code, "name": "东鹏饮料",
+            "days": kwargs.get("days", 180), "count": 2,
+            "items": [
+                {"date": "2026-10-10", "title": "关于回购的公告", "tags": ["回购"],
+                 "level": "info", "url": "https://example.invalid/a1",
+                 "art_code": "AN1"},
+                {"date": "2026-09-01", "title": "关于减持的公告", "tags": ["减持"],
+                 "level": "warning", "url": "https://example.invalid/a2",
+                 "art_code": "AN2"},
+            ],
+        }
+
+    tools.build_announcements = fake_announcements  # type: ignore[assignment]
+    try:
+        result = tools.run_tool(
+            "get_announcements", {"days": 90}, default_company="605499"
+        )
+    finally:
+        tools.build_announcements = original  # type: ignore[assignment]
+
+    assert captured["days"] == 90, captured
+    assert [source.id for source in result.sources] == [
+        "announcement:605499:2026-10-10:AN1",
+        "announcement:605499:2026-09-01:AN2",
+    ], result.sources
+    assert result.sources[0].url == "https://example.invalid/a1"
+    assert result.data["items"][1]["level"] == "warning"
+
+
+def test_valuation() -> None:
+    original = tools.build_valuation
+    tools.build_valuation = lambda code, **kwargs: {
+        "available": True, "code": code, "name": "东鹏饮料",
+        "as_of": "2026-10-23", "fetched_at": "2026-10-24 16:27:38",
+        "price": {"close": 104.48, "market_cap": 76709143908.8},
+        "valuation": {
+            "pe_ttm": {"value": 15.63, "percentile": 0.2475, "years": 5},
+            "pb_mrq": {"value": 3.94, "percentile": 0.2475, "years": 5},
+        },
+        "industry": {"board": "饮料乳品", "count": 28, "median_pe": 24.0,
+                     "rank_pe": 4, "rank_total": 21},
+    }  # type: ignore[assignment]
+    try:
+        result = tools.run_tool("get_valuation", {}, default_company="605499")
+    finally:
+        tools.build_valuation = original  # type: ignore[assignment]
+    assert result.ok is True
+    assert result.data["pe_ttm"] == 15.63
+    assert result.data["pe_percentile"] == 24.8, result.data
+    assert result.sources[0].id == "valuation:605499:2026-10-23"
+
+
+def test_tool_error_is_observation() -> None:
+    original = tools.build_snapshot
+
+    def broken(code: str, **kwargs):
+        raise RuntimeError("没有财报数据")
+
+    tools.build_snapshot = broken  # type: ignore[assignment]
+    try:
+        result = tools.run_tool("get_finance", {}, default_company="000001")
+    finally:
+        tools.build_snapshot = original  # type: ignore[assignment]
+    assert result.ok is False
+    assert result.company == "000001" and "没有财报" in result.error
+
+
 def main() -> None:
     test_schemas()
     test_resolve_company()
     test_finance_units_and_sources()
     test_profile_tool()
+    test_segments_two_slices()
+    test_segments_region_missing()
+    test_announcements_sources()
+    test_valuation()
+    test_tool_error_is_observation()
     print("PASS")
     sys.stdout.flush()
     os._exit(0)
