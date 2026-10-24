@@ -36,6 +36,19 @@ def fake_snapshot(code: str, **kwargs) -> dict:
                 "net_debt": -14869506200.2,
                 "cash_balance": 14474702969.6,
             },
+            "safety": {
+                "interest_debt": 3300000000.0,
+                "short_term_debt": 3000000000.0,
+                "interest_coverage": 8.5,
+                "interest_coverage_basis": "利息费用",
+                "goodwill": 500000000.0,
+                "goodwill_ratio": 6.2,
+                "accounts_receivable": 800000000.0,
+                "accounts_receivable_yoy": 100.0,
+                "inventory": 600000000.0,
+                "inventory_yoy": 9.1,
+                "cash_to_short_term_debt": 4.82,
+            },
         },
         "trend": [
             {"report_date": "2026-03-31", "revenue_sq": 4848071704.63,
@@ -108,6 +121,18 @@ def test_finance_units_and_sources() -> None:
     assert result.data["net_profit_yi"] == 28.67, result.data
     assert result.data["revenue_yoy"] == 15.9, result.data
     assert result.data["trend"][0]["revenue_sq_yi"] == 48.48, result.data["trend"]
+    # 财务安全字段：有息负债、利息保障、商誉、应收/存货同比
+    assert result.data["interest_debt_yi"] == 33.0, result.data
+    assert result.data["short_term_debt_yi"] == 30.0, result.data
+    assert result.data["interest_coverage"] == 8.5, result.data
+    assert result.data["interest_coverage_basis"] == "利息费用", result.data
+    assert result.data["goodwill_yi"] == 5.0, result.data
+    assert result.data["goodwill_ratio"] == 6.2, result.data
+    assert result.data["accounts_receivable_yi"] == 8.0, result.data
+    assert result.data["accounts_receivable_yoy"] == 100.0, result.data
+    assert result.data["inventory_yi"] == 6.0, result.data
+    assert result.data["inventory_yoy"] == 9.1, result.data
+    assert result.data["cash_to_short_term_debt"] == 4.82, result.data
     source = result.sources[0]
     assert source.id == "finance:605499:2026-06-30"
     assert source.as_of == "2026-06-30"

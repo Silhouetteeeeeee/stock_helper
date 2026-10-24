@@ -91,7 +91,7 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "get_finance",
-            "description": "财务快照：营收/净利及同比、毛利率、净利率、ROE、负债率、现金流、单季趋势",
+            "description": "财务快照：营收/净利及同比、毛利率、净利率、ROE、负债率、现金流、有息负债、利息保障、商誉、应收/存货同比、单季趋势",
             "parameters": {
                 "type": "object",
                 "properties": {"company": _COMPANY},
@@ -322,6 +322,7 @@ def _finance(code: str) -> ToolResult:
     revenue = metrics.get("revenue") or {}
     profit = metrics.get("net_profit") or {}
     cash = metrics.get("cash") or {}
+    safety = metrics.get("safety") or {}
     trend_rows = snapshot.get("trend") or []
     latest_trend = trend_rows[-1] if trend_rows else {}
 
@@ -342,6 +343,18 @@ def _finance(code: str) -> ToolResult:
         "ocf_to_net_profit": _round(cash.get("ocf_to_net_profit"), 3),
         "net_debt_yi": _yi(cash.get("net_debt")),
         "cash_yi": _yi(cash.get("cash_balance")),
+        # 财务安全：有息负债、利息保障、商誉与营运资金占用
+        "interest_debt_yi": _yi(safety.get("interest_debt")),
+        "short_term_debt_yi": _yi(safety.get("short_term_debt")),
+        "interest_coverage": _round(safety.get("interest_coverage"), 1),
+        "interest_coverage_basis": safety.get("interest_coverage_basis"),
+        "goodwill_yi": _yi(safety.get("goodwill")),
+        "goodwill_ratio": _pct(safety.get("goodwill_ratio")),
+        "accounts_receivable_yi": _yi(safety.get("accounts_receivable")),
+        "accounts_receivable_yoy": _pct(safety.get("accounts_receivable_yoy")),
+        "inventory_yi": _yi(safety.get("inventory")),
+        "inventory_yoy": _pct(safety.get("inventory_yoy")),
+        "cash_to_short_term_debt": _round(safety.get("cash_to_short_term_debt"), 2),
         "trend": [
             {
                 "period": row.get("report_date"),

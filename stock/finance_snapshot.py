@@ -161,6 +161,20 @@ def format_snapshot(snapshot: dict) -> str:
     if balance:
         lines.append(balance)
 
+    safety = metrics.get("safety") or {}
+    safety_line = _join(
+        _part("有息负债", safety.get("interest_debt"), yi=True),
+        _part("短期有息负债", safety.get("short_term_debt"), yi=True),
+        _times_part("利息保障", safety.get("interest_coverage")),
+        _goodwill_part(safety.get("goodwill"), safety.get("goodwill_ratio")),
+        _part("应收账款", safety.get("accounts_receivable"), yi=True,
+              extra=_pct(safety.get("accounts_receivable_yoy"))),
+        _part("存货", safety.get("inventory"), yi=True,
+              extra=_pct(safety.get("inventory_yoy"))),
+    )
+    if safety_line:
+        lines.append(safety_line)
+
     trend = snapshot["trend"]
     if trend:
         lines.append("")
@@ -226,6 +240,7 @@ def _metrics(latest: dict, last_year: dict | None) -> dict:
             "cash_balance": latest.get("cash"),
             "short_term_borrowings": latest.get("short_term_borrowings"),
         },
+        "safety": _safety(latest, last_year),
     }
 
 
@@ -238,6 +253,76 @@ def _net_debt(row: dict) -> float | None:
     """金融机构的净负债没有可比意义：它们没有有息负债科目，
     现金是准备金而不是可动用资金，算出来的数字只会误导。"""
     return None if _is_financial(row) else row.get("net_debt")
+
+
+def _safety(latest: dict, last_year: dict | None) -> dict:
+    """财务安全：有息负债、利息保障、商誉与营运资金占用。
+
+    金额单位仍是元；比率是 1 表示 1%，和其余指标一致。金融机构没有
+    可比的"有息负债/利息保障"口径（存款不是有息负债，利息支出也不是
+    费用），整组留空，避免用错口径得出"很安全"的假象。
+    """
+    safety = {
+        "interest_debt": _sum(
+            latest.get("short_term_borrowings"),
+            latest.get("current_portion_lt_debt"),
+            latest.get("long_term_borrowings"),
+            latest.get("bonds_payable"),
+            latest.get("lease_liabilities"),
+        ),
+        "short_term_debt": _sum(
+            latest.get("short_term_borrowings"),
+            latest.get("current_portion_lt_debt"),
+        ),
+        "interest_coverage": None,
+        "interest_coverage_basis": None,
+        "goodwill": latest.get("goodwill"),
+        "goodwill_ratio": None,
+        "accounts_receivable": latest.get("accounts_receivable"),
+        "accounts_receivable_yoy": _growth(
+            latest.get("accounts_receivable"), _value(last_year, "accounts_receivable")
+        ),
+        "inventory": latest.get("inventory"),
+        "inventory_yoy": _growth(
+            latest.get("inventory"), _value(last_year, "inventory")
+        ),
+        "cash_to_short_term_debt": None,
+    }
+    if _is_financial(latest):
+        return {key: None for key in safety}
+
+    safety["interest_coverage"], safety["interest_coverage_basis"] = _interest_coverage(latest)
+
+    goodwill, equity = safety["goodwill"], latest.get("total_equity")
+    if goodwill is not None and equity is not None and equity > 0:
+        safety["goodwill_ratio"] = round(goodwill / equity * 100.0, 1)
+
+    cash, short_term = latest.get("cash"), safety["short_term_debt"]
+    if cash is not None and short_term:
+        safety["cash_to_short_term_debt"] = round(cash / short_term, 2)
+    return safety
+
+
+def _interest_coverage(row: dict) -> tuple[float | None, str | None]:
+    """利息保障倍数：``(利润总额 + 利息费用) / 利息费用``。
+
+    数据源优先用"利息费用"；没有该科目时退回财务费用近似。财务费用
+    为负说明利息收入大于支出，算不出有意义的覆盖倍数，留空。
+    """
+    profit = row.get("total_profit")
+    interest = row.get("interest_expense")
+    basis = "利息费用"
+    if interest is None:
+        interest = row.get("finance_expense")
+        basis = "财务费用（近似）"
+    if profit is None or interest is None or interest <= 0:
+        return None, None
+    return round((profit + interest) / interest, 1), basis
+
+
+def _sum(*values) -> float | None:
+    present = [value for value in values if value is not None]
+    return sum(present) if present else None
 
 
 def _level_metric(latest: dict, last_year: dict | None, field: str) -> dict:
@@ -439,6 +524,19 @@ def _ratio_part(label: str, value) -> str | None:
     if value is None:
         return None
     return f"{label} {value:.2f}"
+
+
+def _times_part(label: str, value) -> str | None:
+    if value is None:
+        return None
+    return f"{label} {value:.1f}倍"
+
+
+def _goodwill_part(value, ratio) -> str | None:
+    if value is None:
+        return None
+    extra = None if ratio is None else f"占净资产 {ratio:.1f}%"
+    return _part("商誉", value, yi=True, extra=extra)
 
 
 def _percent_part(label: str, value) -> str | None:
