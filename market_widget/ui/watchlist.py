@@ -77,6 +77,7 @@ class WatchListPanel(QWidget):
         self._rows: dict[str, tuple[QLabel, QLabel, QLabel]] = {}
         self._row_widgets: dict[str, _RowWidget] = {}
         self._items: list[WatchItem] = []
+        self._quotes: dict[str, Quote] = {}   # 最近一次行情，重建行时用于恢复现价
         self._selected_code: str | None = None
 
         self._header = self._build_header()
@@ -106,11 +107,24 @@ class WatchListPanel(QWidget):
 
     # -- 数据入口 ---------------------------------------------------------
     def set_items(self, items: list[WatchItem]) -> None:
-        """重建整个列表（增删自选股后调用）。"""
+        """重建整个列表（增删自选股后调用）。
+
+        行控件是新建的，初始显示为占位符，这里把缓存的上一次行情重新
+        填回去；否则增删任意一只股票都会把其它股票的现价和涨跌幅清空，
+        直到下一次行情刷新才恢复。
+        """
         self._items = list(items)
         self._clear_rows()
         for item in self._items:
             self._append_row(item)
+        # 只保留仍在列表中的行情，避免删除后重新添加时显示过期价格
+        self._quotes = {
+            code: quote for code, quote in self._quotes.items() if code in self._rows
+        }
+        for code, labels in self._rows.items():
+            quote = self._quotes.get(code)
+            if quote is not None:
+                self._apply_row(quote, *labels)
         # 重建行后恢复选中态（选中的股票可能已被删除，此时自然无高亮）
         self.set_selected(self._selected_code)
         # 行数变化后必须让 Qt 丢弃缓存的高度提示，窗口才会重新适配高度
@@ -130,10 +144,12 @@ class WatchListPanel(QWidget):
         for code, labels in self._rows.items():
             quote = by_code.get(code)
             if quote is not None:
+                self._quotes[code] = quote
                 self._apply_row(quote, *labels)
 
     def reset(self) -> None:
         """清空所有行情数值，回到占位状态。"""
+        self._quotes.clear()
         for labels in self._rows.values():
             self._clear_row(*labels)
 

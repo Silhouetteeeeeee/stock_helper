@@ -1,6 +1,7 @@
 """数据输入面板：批量粘贴、自选股增删与刷新控制。
 
 界面本身不抓取行情，只负责把用户/数据源提供的内容解析成 ``Quote`` 后抛给主窗口。
+自选股增删由主窗口写入数据库，面板只负责收集代码和显示操作结果。
 面板默认隐藏，由标题栏的齿轮按钮控制显隐。
 """
 
@@ -35,7 +36,7 @@ class InputPanel(QWidget):
     """手动喂数据的区域，默认隐藏，由标题栏齿轮展开。"""
 
     quotes_submitted = Signal(list)      # list[Quote]
-    item_added = Signal(object)          # WatchItem
+    item_added = Signal(object)          # WatchItem（名称可为空，由主窗口从 stock 表补全）
     item_removed = Signal(str)           # 代码
     refresh_requested = Signal()
     auto_refresh_toggled = Signal(bool, int)
@@ -52,6 +53,16 @@ class InputPanel(QWidget):
     def start_auto_refresh(self) -> None:
         """按当前勾选状态启动刷新，供主窗口初始化时调用。"""
         self._on_auto_toggled(self._auto.isChecked())
+
+    def show_feedback(self, message: str, error: bool = False) -> None:
+        """显示自选股操作结果，供主窗口写入数据库后回显。"""
+        self._feedback.setText(message)
+        color = PALETTE.danger if error else PALETTE.text_muted
+        self._feedback.setStyleSheet(f"color: {color};")
+
+    def clear_code_input(self) -> None:
+        """清空代码框（同时清掉上一条操作提示）。"""
+        self._code_input.clear()
 
     # -- 内部实现 ---------------------------------------------------------
     def _build_content(self, layout: QVBoxLayout, refresh_interval: int) -> None:
@@ -82,23 +93,18 @@ class InputPanel(QWidget):
         batch_row.addStretch(1)
         layout.addLayout(batch_row)
 
-        # 2) 增删自选股
+        # 2) 增删自选股（写入 stock 表的 watchlist_order 字段）
         layout.addWidget(self._hint("自选股管理"))
 
         self._code_input = QLineEdit()
-        self._code_input.setPlaceholderText("代码")
-        self._name_input = QLineEdit()
-        self._name_input.setPlaceholderText("名称")
-
-        item_row = QHBoxLayout()
-        item_row.setSpacing(6)
-        item_row.addWidget(self._code_input, 1)
-        item_row.addWidget(self._name_input, 1)
-        layout.addLayout(item_row)
+        self._code_input.setPlaceholderText("代码，如 600036 / sh600036")
+        self._code_input.textChanged.connect(self._clear_feedback)
+        layout.addWidget(self._code_input)
 
         add_button = QPushButton("添加")
         add_button.setObjectName("GhostButton")
         add_button.setCursor(Qt.PointingHandCursor)
+        add_button.setToolTip("添加代码框中填写的自选股，名称自动从 stock 表读取")
         add_button.clicked.connect(self._on_add_item)
 
         remove_button = QPushButton("移除")
@@ -113,6 +119,12 @@ class InputPanel(QWidget):
         action_row.addWidget(remove_button)
         action_row.addStretch(1)
         layout.addLayout(action_row)
+
+        # 固定高度，显示操作结果时不会让面板跳动
+        self._feedback = QLabel("")
+        self._feedback.setFont(ui_font(9))
+        self._feedback.setFixedHeight(14)
+        layout.addWidget(self._feedback)
 
         # 3) 刷新控制
         refresh_row = QHBoxLayout()
@@ -153,20 +165,23 @@ class InputPanel(QWidget):
     def _on_apply_batch(self) -> None:
         self.quotes_submitted.emit(parse_batch(self._batch.toPlainText()))
 
+    def _clear_feedback(self) -> None:
+        self._feedback.clear()
+
     def _on_add_item(self) -> None:
         code = self._code_input.text().strip()
         if not code:
+            self.show_feedback("请输入股票代码", error=True)
             return
-        name = self._name_input.text().strip() or code
-        self.item_added.emit(WatchItem(code=code, name=name))
-        self._code_input.clear()
-        self._name_input.clear()
+        # 名称由主窗口从 stock 表补全；输入框在添加成功后才清空
+        self.item_added.emit(WatchItem(code=code, name=""))
 
     def _on_remove_item(self) -> None:
         code = self._code_input.text().strip()
-        if code:
-            self.item_removed.emit(code)
-            self._code_input.clear()
+        if not code:
+            self.show_feedback("请输入股票代码", error=True)
+            return
+        self.item_removed.emit(code)
 
     def _on_auto_toggled(self, enabled: bool) -> None:
         self.auto_refresh_toggled.emit(enabled, self._interval_seconds())

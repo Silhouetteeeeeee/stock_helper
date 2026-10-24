@@ -30,7 +30,7 @@ class TitleBar(QWidget):
         self._live_dot.setStyleSheet(f"color: {PALETTE.text_muted}; background: transparent;")
         self._live_dot.setToolTip("数据源未接入")
 
-        self._input_button = self._icon_button("⚙", "数据输入")  # 数据输入面板开关
+        self._input_button = self._icon_button("⚙", "数据输入与自选股管理")  # 数据输入面板开关
         self._input_button.setCheckable(True)
         self._input_button.clicked.connect(self.input_clicked.emit)
 

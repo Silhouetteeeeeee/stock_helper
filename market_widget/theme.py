@@ -32,6 +32,16 @@ def format_price(price: float | None) -> str:
     """把价格格式化为两位小数文本。"""
     return "--" if price is None else f"{price:,.2f}"
 
+def format_amount(amount: float | None) -> str:
+    """把成交额格式化为万 / 亿文本。"""
+    if amount is None or amount <= 0:
+        return "--"
+    if amount >= 1e8:
+        return f"{amount / 1e8:.2f}亿"
+    if amount >= 1e4:
+        return f"{amount / 1e4:.2f}万"
+    return f"{amount:.0f}"
+
 def resolve_font_family(candidates: tuple[str, ...] | list[str]) -> str:
     """返回系统中第一个可用的字体名，全部缺失时回退到 Qt 默认字体。"""
     installed = set(QFontDatabase.families())

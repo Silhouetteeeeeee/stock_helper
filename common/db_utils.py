@@ -1,11 +1,11 @@
 import os
 import sqlite3
-import sys
 from typing import Any, Optional, Type, TypeVar, List
 
-# ========= 路径配置（你原来的） =========
+# ========= 路径配置 =========
+# 以 common/db_utils.py 为基准定位项目根目录，避免依赖 sys.argv[0] 的启动方式
 DB_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(sys.argv[0])),
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "data"
 )
 os.makedirs(DB_DIR, exist_ok=True)  # 自动创建data文件夹，防止不存在报错

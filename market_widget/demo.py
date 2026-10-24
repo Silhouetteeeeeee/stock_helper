@@ -66,7 +66,8 @@ def realtime_intraday(
     for row in df.itertuples(index=False):
         price = float(row.close)
         volume = float(row.volume)
-        weighted = price * volume if is_index else float(row.amount)
+        amount = float(row.amount)
+        weighted = price * volume if is_index else amount
 
         if volume > 0 and weighted == weighted:  # weighted == weighted 用于排除 NaN
             total_weighted += weighted
@@ -79,6 +80,7 @@ def realtime_intraday(
                 avg=avg,
                 volume=volume,
                 minute=_minute_index(row.day),
+                amount=amount if amount == amount else 0.0,
             )
         )
 
@@ -116,6 +118,7 @@ class DemoFeed(QObject):
         self.is_first = True
         self._first_intraday = True
         self._busy = False
+        self._last_codes: tuple[str, ...] = ()   # 上次成功刷新的标的集合
 
         self._code, self._name, self._is_index = window.selected_symbol()
         self._request_id = 0
@@ -145,15 +148,19 @@ class DemoFeed(QObject):
         self.refresh_intraday()
 
     def publish(self) -> None:
-        if not self.is_first and not is_trading_time():
+        codes = list(INDEX_CODES)
+        codes.extend(item.code for item in self._window.watchlist_items())
+        # 增删自选股是用户主动操作，即使不在交易时段也拉一次，
+        # 否则新加的股票要等到下一个交易时段才有价格。
+        watchlist_changed = tuple(codes) != self._last_codes
+        if not self.is_first and not watchlist_changed and not is_trading_time():
             print("当前非交易时间")
             return
         print("刷新数据")
-        tmp = list(INDEX_CODES)
-        tmp.extend([item.code for item in self._window.watchlist_items()])
-        quotes = get_sina_current_stock_info_list(tmp)
+        quotes = get_sina_current_stock_info_list(codes)
         self._window.push_quotes(quotes)
         self._window.set_live(bool(quotes), "实时行情" if quotes else "行情获取失败")
+        self._last_codes = tuple(codes)
         self.is_first = False
 
     def refresh_intraday(self) -> None:

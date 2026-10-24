@@ -10,6 +10,8 @@
     ``window.set_stock_quotes(quotes)``   刷新自选股
     ``window.push_quotes(quotes)``        指数与自选股一起刷新
     ``window.set_watchlist(items)``       重建自选股列表
+    ``window.add_watch_item(item)``       加入自选股（同时写入数据库）
+    ``window.remove_watch_item(code)``    移除自选股（同时写入数据库）
     ``window.set_timeshare(points, pre_close)``  刷新分时图
     ``window.data_requested``             信号：界面需要一份新数据时发出
     ``window.symbol_selected``            信号：选中自选股/指数时发出（代码、名称、是否指数）
@@ -33,7 +35,6 @@ from common.stock import *
 
 from .config import (
     ALWAYS_ON_TOP,
-    DEFAULT_WATCHLIST,
     HOVER_COLLAPSE_DELAY_MS,
     HOVER_EXPAND_DELAY_MS,
     INDEX_ITEMS,
@@ -46,6 +47,12 @@ from .config import (
     WINDOW_MARGIN_Y,
     WINDOW_WIDTH,
     WatchItem,
+)
+from .watchlist_store import (
+    WatchlistError,
+    add_to_watchlist,
+    load_watchlist,
+    remove_from_watchlist,
 )
 from .theme import (
     PALETTE,
@@ -146,7 +153,7 @@ class MarketWidget(QWidget):
         body_layout.addWidget(self._timeshare)
         body_layout.addWidget(self._divider(self._body))
         body_layout.addWidget(self._section_title("自选股", self._body))
-        self._watchlist = WatchListPanel(DEFAULT_WATCHLIST, self._body)  # 自选股列表
+        self._watchlist = WatchListPanel(load_watchlist(), self._body)  # 自选股列表（来自数据库）
         self._watchlist.item_clicked.connect(self._on_watch_clicked)
         self._watchlist.item_double_clicked.connect(self._on_item_activated)
         self._watchlist.layout_changed.connect(self._schedule_refit)
@@ -320,16 +327,39 @@ class MarketWidget(QWidget):
         return self._watchlist.items()
 
     def add_watch_item(self, item: WatchItem) -> None:
-        items = self.watchlist_items()
-        if any(existing.code == item.code for existing in items):
+        """加入自选股并写入数据库；名称统一以 stock 表为准。"""
+        try:
+            added = add_to_watchlist(item.code)
+        except WatchlistError as exc:
+            self._input_panel.show_feedback(str(exc), error=True)
             return
-        items.append(item)
+
+        items = [
+            existing
+            for existing in self.watchlist_items()
+            if existing.code != added.code
+        ]
+        items.append(added)
         self.set_watchlist(items)
+        self._input_panel.clear_code_input()
+        self._input_panel.show_feedback(f"已添加 {added.name}")
         self.data_requested.emit()
 
     def remove_watch_item(self, code: str) -> None:
-        items = [item for item in self.watchlist_items() if item.code != code]
+        """从自选股和数据库中移除，代码支持带交易所前缀。"""
+        try:
+            removed = remove_from_watchlist(code)
+        except WatchlistError as exc:
+            self._input_panel.show_feedback(str(exc), error=True)
+            return
+        if removed is None:
+            self._input_panel.show_feedback("该股票不在自选股中", error=True)
+            return
+
+        items = [item for item in self.watchlist_items() if item.code != removed.code]
         self.set_watchlist(items)
+        self._input_panel.clear_code_input()
+        self._input_panel.show_feedback(f"已移除 {removed.name}")
 
     def set_live(self, live: bool, tip: str = "") -> None:
         self._titlebar.set_live(live, tip or ("实时数据已接入" if live else "数据源未接入"))

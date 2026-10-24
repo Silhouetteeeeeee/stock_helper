@@ -1,6 +1,8 @@
-"""界面配置：窗口行为、配色、字体与默认自选股列表。
+"""界面配置：窗口行为、配色、字体与自选股初始列表。
 
 界面只依赖本文件中的配置，不含任何数据获取逻辑。
+自选股实际保存在 ``data/stock.db`` 的 ``stock.watchlist_order`` 字段中，
+本文件的列表只用于首次升级时写入数据库。
 """
 
 from __future__ import annotations
@@ -66,7 +68,7 @@ class WatchItem:
     code: str
     name: str
 
-# 默认自选股（示例，可随时替换为真实代码）
+# 首次迁移到数据库时写入的初始自选股；之后增删都以数据库为准
 DEFAULT_WATCHLIST: list[WatchItem] = [
     WatchItem("605499", "东鹏饮料"),
     WatchItem("600036", "招商银行"),
