@@ -17,6 +17,11 @@ QUERY_SQL_STOCK_BY_NAME = """
     from stock where name = ?
 """
 
+QUERY_SQL_STOCK_BY_CODE = """
+    select code, name
+    from stock where code = ?
+"""
+
 WATCHLIST_COLUMN = "watchlist_order"
 
 QUERY_SQL_WATCHLIST = f"""
@@ -40,6 +45,16 @@ def get_all_stocks() -> list[Stock]:
 def get_stock_by_name(name: str) -> Stock | None:
     with closing(_connect()) as conn:
         row = conn.execute(QUERY_SQL_STOCK_BY_NAME, (name,)).fetchone()
+    return None if row is None else _row_to_stock(row)
+
+
+def get_stock(code: str) -> Stock | None:
+    """按代码读取股票基础信息；不在 stock 表中时返回 None。"""
+    code = normalize_stock_code(code)
+    if not code:
+        return None
+    with closing(_connect()) as conn:
+        row = conn.execute(QUERY_SQL_STOCK_BY_CODE, (code,)).fetchone()
     return None if row is None else _row_to_stock(row)
 
 
