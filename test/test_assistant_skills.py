@@ -14,7 +14,7 @@ def test_catalog() -> None:
     items = catalog()
     assert [item["name"] for item in items] == [
         "business_model", "moat", "operating_history", "financial_safety",
-        "growth_outlook",
+        "growth_outlook", "management",
     ]
     assert all(item["description"] for item in items)
     assert all(item["title"] for item in items)
@@ -77,6 +77,16 @@ def test_growth_outlook_skill() -> None:
         assert phrase in text, phrase
 
 
+def test_management_skill() -> None:
+    skill = get_skill("management")
+    assert skill is not None
+    assert skill.title.startswith("第六问")
+    text = skill.instructions
+    for phrase in ("诚信", "承诺", "关联交易", "资本配置", "股权激励",
+                   "回购", "资料不足", "get_announcements", "红旗"):
+        assert phrase in text, phrase
+
+
 def test_unknown_skill() -> None:
     assert get_skill("q9") is None
     assert get_skill(None) is None
@@ -89,6 +99,7 @@ def main() -> None:
     test_operating_history_skill()
     test_financial_safety_skill()
     test_growth_outlook_skill()
+    test_management_skill()
     test_unknown_skill()
     print("PASS")
     sys.stdout.flush()
