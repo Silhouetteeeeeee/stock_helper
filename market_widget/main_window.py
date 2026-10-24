@@ -16,6 +16,12 @@
     ``window.data_requested``             信号：界面需要一份新数据时发出
     ``window.symbol_selected``            信号：选中自选股/指数时发出（代码、名称、是否指数）
     ``window.selected_symbol()``          返回当前选中的（代码、名称、是否指数）
+    ``window.financials_updated``         信号：某只股票的财报已同步完成
+    ``window.finance_status``             信号：财报调度的人话状态（失败/同步结果）
+    ``window.finance_scheduler``          后台财报调度器（未启用时为 None）
+
+财报调度器随窗口显示启动、随窗口关闭停止：它只查本地数据库，
+网络请求都在后台线程里跑，不会卡界面。
 """
 
 from __future__ import annotations
@@ -33,8 +39,11 @@ from PySide6.QtWidgets import (
 
 from common.stock import *
 
+from stock.finance_scheduler import FinanceScheduler
+
 from .config import (
     ALWAYS_ON_TOP,
+    FINANCE_MONITOR,
     HOVER_COLLAPSE_DELAY_MS,
     HOVER_EXPAND_DELAY_MS,
     INDEX_ITEMS,
@@ -77,6 +86,8 @@ class MarketWidget(QWidget):
     data_requested = Signal()
     item_activated = Signal(str)  # 双击自选股，抛出股票代码
     symbol_selected = Signal(str, str, bool)  # 选中标的：代码 / 名称 / 是否指数
+    financials_updated = Signal(str)  # 某只股票的财报已同步完成
+    finance_status = Signal(str)      # 财报调度的人话状态
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -117,6 +128,48 @@ class MarketWidget(QWidget):
         self._refresh_timer = QTimer(self)             # 自动刷新定时器（由数据输入面板控制启停）
         self._refresh_timer.timeout.connect(self.data_requested.emit)
         self._input_panel.start_auto_refresh()
+
+        self._finance_started = False                  # 调度器是否已随窗口启动
+        self._setup_finance_monitor()
+
+    # ------------------------------------------------------------------
+    # 财报调度（披露日历 → 待披露队列 → 自动同步三表）
+    # ------------------------------------------------------------------
+    def _setup_finance_monitor(self) -> None:
+        self._finance_monitor: FinanceScheduler | None = None
+        if not FINANCE_MONITOR:
+            return
+
+        self._finance_monitor = FinanceScheduler(self)
+        self._finance_monitor.financials_updated.connect(self.financials_updated.emit)
+        self._finance_monitor.sync_finished.connect(self._on_finance_sync_finished)
+        self._finance_monitor.error.connect(
+            lambda message: self.finance_status.emit(f"财报同步失败：{message}")
+        )
+
+    def _on_finance_sync_finished(self, result: dict) -> None:
+        codes = result.get("codes") or []
+        if codes:
+            self.finance_status.emit(f"已同步 {len(codes)} 只股票的财报")
+
+    @property
+    def finance_scheduler(self) -> FinanceScheduler | None:
+        """后台财报调度器；``FINANCE_MONITOR`` 关闭时为 None。"""
+        return self._finance_monitor
+
+    def start_finance_monitor(self) -> None:
+        """启动财报调度（窗口显示时自动调用）。"""
+        if self._finance_monitor is None or self._finance_started:
+            return
+        self._finance_started = True
+        self._finance_monitor.start()
+
+    def stop_finance_monitor(self) -> None:
+        """停止财报调度（窗口关闭时自动调用）。"""
+        if self._finance_monitor is None or not self._finance_started:
+            return
+        self._finance_started = False
+        self._finance_monitor.stop()
 
     # ------------------------------------------------------------------
     # 界面搭建
@@ -439,6 +492,11 @@ class MarketWidget(QWidget):
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
         self._apply_geometry()
+        self.start_finance_monitor()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self.stop_finance_monitor()
+        super().closeEvent(event)
 
     def _schedule_refit(self):
         print("[调用 _schedule_refit 前]")
