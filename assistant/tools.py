@@ -151,7 +151,7 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "get_valuation",
-            "description": "估值：PE/PB 及历史分位、同行业对比；本版只陈述事实，不做估值结论",
+            "description": "估值：PE/PB 及历史分位、同行业对比；工具只提供事实数据，估值判断交给 skill 的情景分析",
             "parameters": {
                 "type": "object",
                 "properties": {"company": _COMPANY},

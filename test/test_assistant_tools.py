@@ -144,6 +144,29 @@ def test_finance_units_and_sources() -> None:
     assert other.sources[0].id.startswith("finance:600519:"), other.sources
 
 
+def test_finance_without_safety() -> None:
+    """金融机构没有安全字段时工具不能报错，字段应为 None。"""
+    original = tools.build_snapshot
+
+    def bare_snapshot(code: str, **kwargs) -> dict:
+        snapshot = fake_snapshot(code, **kwargs)
+        snapshot["metrics"].pop("safety")
+        return snapshot
+
+    tools.build_snapshot = bare_snapshot  # type: ignore[assignment]
+    try:
+        result = tools.run_tool("get_finance", {}, default_company="600519")
+    finally:
+        tools.build_snapshot = original  # type: ignore[assignment]
+
+    assert result.ok is True, result
+    for key in ("interest_debt_yi", "short_term_debt_yi", "interest_coverage",
+                "goodwill_yi", "goodwill_ratio", "accounts_receivable_yi",
+                "accounts_receivable_yoy", "inventory_yi", "inventory_yoy",
+                "cash_to_short_term_debt"):
+        assert result.data[key] is None, (key, result.data[key])
+
+
 def test_profile_tool() -> None:
     original = tools.build_profile
     tools.build_profile = lambda code, **kwargs: {
@@ -433,6 +456,7 @@ def main() -> None:
     test_schemas()
     test_resolve_company()
     test_finance_units_and_sources()
+    test_finance_without_safety()
     test_load_skill_tool()
     test_financial_history_tool()
     test_financial_history_missing()

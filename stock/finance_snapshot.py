@@ -162,10 +162,13 @@ def format_snapshot(snapshot: dict) -> str:
         lines.append(balance)
 
     safety = metrics.get("safety") or {}
+    coverage_basis = safety.get("interest_coverage_basis")
+    # 用财务费用近似时要标出来，不能和利息费用口径混为一谈
+    coverage_note = "财务费用近似" if coverage_basis and "财务费用" in coverage_basis else None
     safety_line = _join(
         _part("有息负债", safety.get("interest_debt"), yi=True),
         _part("短期有息负债", safety.get("short_term_debt"), yi=True),
-        _times_part("利息保障", safety.get("interest_coverage")),
+        _times_part("利息保障", safety.get("interest_coverage"), coverage_note),
         _goodwill_part(safety.get("goodwill"), safety.get("goodwill_ratio")),
         _part("应收账款", safety.get("accounts_receivable"), yi=True,
               extra=_pct(safety.get("accounts_receivable_yoy"))),
@@ -417,19 +420,23 @@ def _flags(
             "detail": {"revenue_yoy": revenue_yoy},
         })
 
-    # 单期现金流可能受季节性影响，连续两期才提示
-    streak = _trailing_streak(ordered, "ocf_to_net_profit", lambda v: v < OCF_RATIO_WARN)
-    if streak >= 2:
-        ratio = latest.get("ocf_to_net_profit")
-        flags.append({
-            "level": "warning",
-            "code": "weak_operating_cash_flow",
-            "message": (
-                f"经营现金流连续 {streak} 期低于净利润的 {OCF_RATIO_WARN * 100:.0f}%"
-                f"（最近一期只有 {ratio * 100:.0f}%）"
-            ),
-            "detail": {"periods": streak, "ratio": ratio},
-        })
+    # 单期现金流可能受季节性影响，连续两期才提示。
+    # 银行的经营现金流由存款/贷款变动驱动，和净利润没有可比性，不报这条。
+    if not _is_financial(latest):
+        streak = _trailing_streak(
+            ordered, "ocf_to_net_profit", lambda v: v < OCF_RATIO_WARN
+        )
+        if streak >= 2:
+            ratio = latest.get("ocf_to_net_profit")
+            flags.append({
+                "level": "warning",
+                "code": "weak_operating_cash_flow",
+                "message": (
+                    f"经营现金流连续 {streak} 期低于净利润的 {OCF_RATIO_WARN * 100:.0f}%"
+                    f"（最近一期只有 {ratio * 100:.0f}%）"
+                ),
+                "detail": {"periods": streak, "ratio": ratio},
+            })
 
     debt = latest.get("debt_ratio")
     debt_last_year = _value(last_year, "debt_ratio")
@@ -526,10 +533,11 @@ def _ratio_part(label: str, value) -> str | None:
     return f"{label} {value:.2f}"
 
 
-def _times_part(label: str, value) -> str | None:
+def _times_part(label: str, value, note: str | None = None) -> str | None:
     if value is None:
         return None
-    return f"{label} {value:.1f}倍"
+    text = f"{label} {value:.1f}倍"
+    return text if not note else f"{text}（{note}）"
 
 
 def _goodwill_part(value, ratio) -> str | None:

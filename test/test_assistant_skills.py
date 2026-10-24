@@ -63,7 +63,8 @@ def test_financial_safety_skill() -> None:
     for phrase in ("有息负债", "利息保障", "短期", "商誉", "应收账款", "存货",
                    "压力测试", "资料不足", "资产负债率", "get_finance"):
         assert phrase in text, phrase
-    assert "70%" in text
+    assert "不要机械套用" in text
+    assert "口径不可比" in text
     assert "金融机构" in text
 
 
@@ -75,6 +76,8 @@ def test_growth_outlook_skill() -> None:
     for phrase in ("市场空间", "渗透率", "份额", "再投资", "资本开支",
                    "资料不足", "get_segments", "线性外推"):
         assert phrase in text, phrase
+    assert "不要用过去几年的增速外推未来" in text
+    assert "不要编数字" in text
 
 
 def test_management_skill() -> None:
@@ -85,6 +88,8 @@ def test_management_skill() -> None:
     for phrase in ("诚信", "承诺", "关联交易", "资本配置", "股权激励",
                    "回购", "资料不足", "get_announcements", "红旗"):
         assert phrase in text, phrase
+    assert "标题不等于事实" in text
+    assert "无法证伪" in text
 
 
 def test_valuation_skill() -> None:
@@ -95,6 +100,8 @@ def test_valuation_skill() -> None:
     for phrase in ("PE", "PB", "分位", "自由现金流", "DCF", "目标价",
                    "隐含", "资料不足", "get_valuation"):
         assert phrase in text, phrase
+    assert "不给单一精确目标价" in text
+    assert "不要输出 DCF 数字" in text
 
 
 def test_margin_of_safety_skill() -> None:
@@ -105,6 +112,9 @@ def test_margin_of_safety_skill() -> None:
     for phrase in ("内在价值", "安全边际", "折价", "可预测性", "财务风险",
                    "护城河", "资料不足", "买卖建议", "get_valuation"):
         assert phrase in text, phrase
+    assert "只做条件式分析" in text
+    assert "未加载 valuation 就自行编造估值区间" in text
+    assert "load_skill" in text
 
 
 def test_unknown_skill() -> None:

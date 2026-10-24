@@ -111,13 +111,16 @@ def test_safety_metrics() -> None:
     assert "商誉 10.0亿（占净资产 20.0%）" in text, text
 
     # 没有利息费用科目时用财务费用近似，并标明口径
-    fallback = snap.snapshot_from_rows([
+    fallback_snapshot = snap.snapshot_from_rows([
         row("2025-06-30", revenue=100 * E8),
         row("2026-06-30", revenue=100 * E8, total_profit=9 * E8,
             finance_expense=1 * E8),
-    ])["metrics"]["safety"]
+    ])
+    fallback = fallback_snapshot["metrics"]["safety"]
     assert fallback["interest_coverage"] == 10.0, fallback
     assert "财务费用" in fallback["interest_coverage_basis"], fallback
+    # 摘要里也要标明是近似口径，不能和利息费用口径混在一起
+    assert "财务费用近似" in snap.format_snapshot(fallback_snapshot)
 
     # 利息费用为 0 或为负（净利息收入）时算不出覆盖倍数
     for interest in (0, -1 * E8):
@@ -126,6 +129,23 @@ def test_safety_metrics() -> None:
                 interest_expense=interest),
         ])["metrics"]["safety"]
         assert zero["interest_coverage"] is None, zero
+
+    # 所有债务科目都缺失时是"未知"，不能用 0 冒充"没有负债"
+    bare = snap.snapshot_from_rows([
+        row("2026-06-30", revenue=100 * E8, total_profit=10 * E8,
+            interest_expense=1 * E8, total_equity=50 * E8),
+    ])["metrics"]["safety"]
+    assert bare["interest_debt"] is None, bare
+    assert bare["short_term_debt"] is None, bare
+    assert bare["cash_to_short_term_debt"] is None, bare
+
+    # 净资产为 0 或负数时商誉占比没有意义
+    for equity in (0, -10 * E8):
+        broken = snap.snapshot_from_rows([
+            row("2026-06-30", revenue=100 * E8, goodwill=10 * E8,
+                total_equity=equity),
+        ])["metrics"]["safety"]
+        assert broken["goodwill_ratio"] is None, broken
 
     # 银行没有可比的有息负债与利息保障口径，整组留空
     bank = snap.snapshot_from_rows([
@@ -137,6 +157,15 @@ def test_safety_metrics() -> None:
     assert "有息负债" not in snap.format_snapshot(snap.snapshot_from_rows([
         row("2026-06-30", revenue=100 * E8, cost_of_revenue=None),
     ]))
+
+    # 银行的经营现金流由存款变动驱动，连续两期偏低也不能报"现金流异常"
+    bank_history = snap.snapshot_from_rows([
+        row("2025-06-30", revenue=100 * E8, cost_of_revenue=None,
+            ocf_to_net_profit=0.3),
+        row("2026-06-30", revenue=110 * E8, cost_of_revenue=None,
+            ocf_to_net_profit=0.3),
+    ], name="招商银行")
+    assert "weak_operating_cash_flow" not in codes(bank_history), codes(bank_history)
 
 
 def main() -> None:
