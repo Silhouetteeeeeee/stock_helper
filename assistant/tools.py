@@ -22,13 +22,41 @@ from stock.valuation import build_valuation
 
 from .company_profile import build_profile
 from .models import Source, ToolResult
+from .skills import catalog, get_skill
 
 _COMPANY = {
     "type": "string",
     "description": "股票代码或简称；省略则用当前公司",
 }
 
+_SKILL_NAMES = [item["name"] for item in catalog()]
+_SKILL_HINT = "；".join(
+    f"{item['name']}（{item['title']}）" for item in catalog()
+)
+
 TOOL_SCHEMAS: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "load_skill",
+            "description": (
+                "加载研究 skill 的完整判据与回答结构。可用："
+                f"{_SKILL_HINT}。宏观问题可一次加载多个。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": _SKILL_NAMES,
+                        "description": "要加载的 skill 名称",
+                    },
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -198,6 +226,9 @@ def run_tool(
     try:
         if not isinstance(arguments, dict):
             arguments = {}
+        # skill 是研究方法的说明，不属于任何一家公司，必须先于公司解析
+        if name == "load_skill":
+            return _load_skill_tool(arguments)
         if name == "resolve_company":
             return _resolve_company_tool(arguments)
 
@@ -220,6 +251,24 @@ def run_tool(
         return ToolResult(ok=False, company=code, error=f"未知工具：{name}")
     except Exception as error:  # noqa: BLE001 - 数据层异常统一交给模型处理
         return ToolResult(ok=False, company=code, error=str(error))
+
+
+def _load_skill_tool(arguments: dict) -> ToolResult:
+    requested = arguments.get("name")
+    skill = get_skill(requested)
+    if skill is None:
+        available = "、".join(item["name"] for item in catalog())
+        return ToolResult(
+            ok=False, error=f"未知 skill：{requested}；可用：{available}"
+        )
+    return ToolResult(
+        ok=True,
+        data={
+            "name": skill.name,
+            "title": skill.title,
+            "instructions": skill.instructions,
+        },
+    )
 
 
 def _resolve_company_tool(arguments: dict) -> ToolResult:

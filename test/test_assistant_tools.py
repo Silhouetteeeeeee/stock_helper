@@ -50,7 +50,7 @@ def fake_snapshot(code: str, **kwargs) -> dict:
 def test_schemas() -> None:
     names = [item["function"]["name"] for item in tools.schemas()]
     assert names == [
-        "resolve_company", "get_company_profile", "get_finance",
+        "load_skill", "resolve_company", "get_company_profile", "get_finance",
         "get_financial_history", "get_segments", "get_announcements",
         "get_valuation",
     ], names
@@ -154,6 +154,26 @@ def fake_segments(rows, kind=None, code=None, name=None, stale=False) -> dict:
 
 
 REGION = True
+
+
+def test_load_skill_tool() -> None:
+    # 没有默认公司也必须能加载 skill
+    result = tools.run_tool("load_skill", {"name": "moat"})
+    assert result.ok is True, result
+    assert result.data["name"] == "moat"
+    assert "可证伪" in result.data["instructions"]
+
+    missing = tools.run_tool("load_skill", {"name": "q9"})
+    assert missing.ok is False
+    assert "business_model" in missing.error and "moat" in missing.error, missing
+
+    schema = next(
+        item for item in tools.schemas()
+        if item["function"]["name"] == "load_skill"
+    )
+    assert schema["function"]["parameters"]["properties"]["name"]["enum"] == [
+        "business_model", "moat"
+    ]
 
 
 def test_financial_history_tool() -> None:
@@ -363,6 +383,7 @@ def main() -> None:
     test_schemas()
     test_resolve_company()
     test_finance_units_and_sources()
+    test_load_skill_tool()
     test_financial_history_tool()
     test_financial_history_missing()
     test_profile_tool()
