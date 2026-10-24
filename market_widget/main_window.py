@@ -13,8 +13,10 @@
     ``window.add_watch_item(item)``       加入自选股（同时写入数据库）
     ``window.remove_watch_item(code)``    移除自选股（同时写入数据库）
     ``window.set_timeshare(points, pre_close)``  刷新分时图
+    ``window.set_fundamentals(code, briefing)``  填入基本面速览（过期的会被丢弃）
     ``window.data_requested``             信号：界面需要一份新数据时发出
     ``window.symbol_selected``            信号：选中自选股/指数时发出（代码、名称、是否指数）
+    ``window.fundamentals_requested``     信号：需要某只股票的基本面速览时发出
     ``window.selected_symbol()``          返回当前选中的（代码、名称、是否指数）
     ``window.financials_updated``         信号：某只股票的财报已同步完成
     ``window.finance_status``             信号：财报调度的人话状态（失败/同步结果）
@@ -72,7 +74,15 @@ from .theme import (
     numeric_font,
     ui_font,
 )
-from .ui import IndexPanel, InputPanel, MinutePoint, TimeShareChart, TitleBar, WatchListPanel
+from .ui import (
+    FundamentalsPanel,
+    IndexPanel,
+    InputPanel,
+    MinutePoint,
+    TimeShareChart,
+    TitleBar,
+    WatchListPanel,
+)
 
 WINDOW_TITLE = "行情速览"
 
@@ -86,6 +96,7 @@ class MarketWidget(QWidget):
     data_requested = Signal()
     item_activated = Signal(str)  # 双击自选股，抛出股票代码
     symbol_selected = Signal(str, str, bool)  # 选中标的：代码 / 名称 / 是否指数
+    fundamentals_requested = Signal(str)  # 需要某只股票的基本面速览（选股/财报更新时）
     financials_updated = Signal(str)  # 某只股票的财报已同步完成
     finance_status = Signal(str)      # 财报调度的人话状态
 
@@ -141,11 +152,17 @@ class MarketWidget(QWidget):
             return
 
         self._finance_monitor = FinanceScheduler(self)
-        self._finance_monitor.financials_updated.connect(self.financials_updated.emit)
+        self._finance_monitor.financials_updated.connect(self._on_financials_updated)
         self._finance_monitor.sync_finished.connect(self._on_finance_sync_finished)
         self._finance_monitor.error.connect(
             lambda message: self.finance_status.emit(f"财报同步失败：{message}")
         )
+
+    def _on_financials_updated(self, code: str) -> None:
+        """财报同步完成后：转发给外部，并刷新当前选中股票的基本面。"""
+        self.financials_updated.emit(code)
+        if code == self._selected_code and not self._selected_is_index:
+            self.fundamentals_requested.emit(code)
 
     def _on_finance_sync_finished(self, result: dict) -> None:
         codes = result.get("codes") or []
@@ -204,6 +221,11 @@ class MarketWidget(QWidget):
         body_layout.addWidget(self._timeshare_title)
         self._timeshare = TimeShareChart(self._body)  # 分时图（数据由外部注入）
         body_layout.addWidget(self._timeshare)
+        body_layout.addWidget(self._divider(self._body))
+        self._fundamentals_title = self._section_title("基本面", self._body)
+        body_layout.addWidget(self._fundamentals_title)
+        self._fundamentals = FundamentalsPanel(self._body)  # 财报 + 估值速览（数据由外部注入）
+        body_layout.addWidget(self._fundamentals)
         body_layout.addWidget(self._divider(self._body))
         body_layout.addWidget(self._section_title("自选股", self._body))
         self._watchlist = WatchListPanel(load_watchlist(), self._body)  # 自选股列表（来自数据库）
@@ -311,6 +333,13 @@ class MarketWidget(QWidget):
         """刷新分时图（必须在主线程调用）。"""
         self._timeshare.set_data(points, pre_close)
 
+    def set_fundamentals(self, code: str, briefing: dict) -> None:
+        """填入基本面速览；标的已经切走时直接丢弃这份过期结果。"""
+        if self._selected_is_index or code != self._selected_code:
+            return
+        self._fundamentals.show_briefing(briefing)
+        self._schedule_refit()
+
     def selected_symbol(self) -> tuple[str, str, bool]:
         """返回当前选中的（代码, 名称, 是否指数）。"""
         return self._selected_code, self._selected_name, self._selected_is_index
@@ -341,7 +370,19 @@ class MarketWidget(QWidget):
         self._timeshare_title.setText(f"分时 · {name}" if name else "分时")
         # 先清空旧标的的曲线，等新数据到达后再绘制，避免标题与图形不一致
         self._timeshare.set_data([], 0.0)
+
+        # 基本面同理：先说明在加载，切换太快时过期结果会被 set_fundamentals 丢掉
+        self._fundamentals_title.setText(
+            f"基本面 · {name}" if name and not is_index else "基本面"
+        )
+        if is_index:
+            self._fundamentals.show_message("指数没有财报数据")
+        else:
+            self._fundamentals.show_loading()
+            self.fundamentals_requested.emit(code)
+
         self.symbol_selected.emit(code, name, is_index)
+        self._schedule_refit()
 
     def _on_watch_clicked(self, code: str) -> None:
         item = next((item for item in self._watchlist.items() if item.code == code), None)
@@ -514,14 +555,17 @@ class MarketWidget(QWidget):
 
         area = screen.availableGeometry()
 
-        if self._locked_minimized:
-            # 锁定迷你模式：只显示标题栏
-            target_height = MINIMIZED_HEIGHT
-            self.setFixedHeight(target_height)
-
-        elif not self._hover_expanded:
-            # 普通迷你模式：标题栏 + 指数迷你行
-            target_height = MINIMIZED_HEIGHT + MINI_MODE_ROW_HEIGHT
+        if self._locked_minimized or not self._hover_expanded:
+            # 隐藏 body 会留下一个待处理的布局请求。body 里有自动换行的
+            # 标签（基本面速览），布局的高度随宽度变化，这个请求如果排在
+            # setFixedHeight 之后执行，会按展开时的高度把窗口重新撑开，
+            # 迷你态就失效了。所以先在这里把布局消化掉，再固定高度。
+            self._card_layout.activate()
+            target_height = (
+                MINIMIZED_HEIGHT
+                if self._locked_minimized
+                else MINIMIZED_HEIGHT + MINI_MODE_ROW_HEIGHT
+            )
             self.setFixedHeight(target_height)
 
         else:

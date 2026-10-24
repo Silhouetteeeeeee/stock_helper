@@ -14,6 +14,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 from PySide6.QtWidgets import QApplication
 
 import stock.utils as su
+from stock.briefing import build_briefing
 from stock.utils import (
     CHINA_TZ,
     get_sina_current_stock_info_list,
@@ -109,6 +110,26 @@ class _IntradayWorker(QRunnable):
         self.signals.finished.emit(self._request_id, result)
 
 
+class _BriefingSignals(QObject):
+    finished = Signal(str, object)  # 股票代码 / briefing 字典或 Exception
+
+
+class _BriefingWorker(QRunnable):
+    """后台生成基本面速览：财报缓存没命中时会联网抓取，不能放在界面线程。"""
+
+    def __init__(self, code: str) -> None:
+        super().__init__()
+        self._code = code
+        self.signals = _BriefingSignals()
+
+    def run(self) -> None:
+        try:
+            result = build_briefing(self._code)
+        except Exception as exc:
+            result = exc
+        self.signals.finished.emit(self._code, result)
+
+
 class DemoFeed(QObject):
     """仅用于演示界面效果：定时拉取行情，正式接入时请替换为你的数据层。"""
 
@@ -126,6 +147,12 @@ class DemoFeed(QObject):
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(1)
 
+        # 基本面速览：抓一次缓存一份，财报更新后由 financials_updated 清除
+        self._briefings: dict[str, dict] = {}
+        self._briefing_pending: set[str] = set()
+        self._briefing_pool = QThreadPool(self)
+        self._briefing_pool.setMaxThreadCount(1)
+
         self._intraday_timer = QTimer(self)
         self._intraday_timer.setInterval(INTRADAY_REFRESH_MS)
         self._intraday_timer.timeout.connect(self.refresh_intraday)
@@ -134,6 +161,9 @@ class DemoFeed(QObject):
         """启动分时定时刷新，并立刻拉取一次。"""
         self._intraday_timer.start()
         self.refresh_intraday()
+        # 窗口构造时就选好了默认标的，那时还没有监听者，这里补一次
+        if self._code and not self._is_index:
+            self.request_briefing(self._code)
 
     def set_symbol(self, code: str, name: str, is_index: bool) -> None:
         """界面切换选中标的后立即拉取对应分时，并让旧请求的结果失效。"""
@@ -183,6 +213,39 @@ class DemoFeed(QObject):
         worker.signals.finished.connect(self._on_intraday_ready)
         self._pool.start(worker)
 
+    # -- 基本面 -------------------------------------------------------------
+    def request_briefing(self, code: str) -> None:
+        """选中股票时取基本面速览：有缓存立即显示，否则放后台抓一次。"""
+        if not code:
+            return
+        cached = self._briefings.get(code)
+        if cached is not None:
+            self._window.set_fundamentals(code, cached)
+            return
+        if code in self._briefing_pending:
+            return
+
+        self._briefing_pending.add(code)
+        worker = _BriefingWorker(code)
+        worker.signals.finished.connect(self._on_briefing_ready)
+        self._briefing_pool.start(worker)
+
+    def invalidate_briefing(self, code: str) -> None:
+        """财报刚同步完，丢掉旧速览，等界面重新请求。"""
+        self._briefings.pop(code, None)
+
+    def _on_briefing_ready(self, code: str, result: object) -> None:
+        self._briefing_pending.discard(code)
+        if isinstance(result, Exception):
+            print(f"基本面加载失败（{code}）: {result}")
+            self._window.set_fundamentals(code, {
+                "available": False,
+                "summary": "基本面数据获取失败",
+            })
+            return
+        self._briefings[code] = result
+        self._window.set_fundamentals(code, result)
+
     def _on_intraday_ready(self, request_id: int, result: object) -> None:
         # 切换标的后旧请求可能才返回，直接丢弃，避免覆盖当前曲线
         if request_id != self._request_id:
@@ -211,6 +274,8 @@ def main() -> int:
     feed = DemoFeed(window)
     window.data_requested.connect(feed.publish)
     window.symbol_selected.connect(feed.set_symbol)
+    window.fundamentals_requested.connect(feed.request_briefing)
+    window.financials_updated.connect(feed.invalidate_briefing)
     feed.start()
     feed.publish()
     return app.exec()
