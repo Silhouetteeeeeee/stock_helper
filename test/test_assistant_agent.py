@@ -1,0 +1,244 @@
+"""ReAct 循环：工具调用、引用、轮次上限、多轮与对照。"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from types import SimpleNamespace
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import assistant.agent as agent_mod
+from assistant.models import Source, ToolResult
+
+FIN = Source("finance:605499:2026-06-30", "财报", "东鹏饮料 2026-06-30",
+             "2026-06-30", "2026-10-24 15:57:57")
+MT = Source("finance:600519:2026-06-30", "财报", "贵州茅台 2026-06-30",
+            "2026-06-30", "2026-10-24 15:57:57")
+
+
+def response(content=None, tool_calls=None):
+    message = SimpleNamespace(content=content, tool_calls=tool_calls)
+    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+def tool_call(call_id, name, arguments):
+    return SimpleNamespace(
+        id=call_id, type="function",
+        function=SimpleNamespace(name=name, arguments=json.dumps(arguments)),
+    )
+
+
+class FakeClient:
+    def __init__(self, responses):
+        self.calls = []
+        self._responses = list(responses)
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+    def _create(self, **kwargs):
+        self.calls.append(kwargs)
+        return self._responses.pop(0)
+
+
+def test_loop_and_citation() -> None:
+    client = FakeClient([
+        response(tool_calls=[tool_call("c1", "get_finance", {})]),
+        response(content="能量饮料是主力[[finance:605499:2026-06-30]]。"),
+    ])
+    original = agent_mod.run_tool
+    agent_mod.run_tool = lambda name, arguments, default_company=None: ToolResult(
+        ok=True, company="605499", as_of="2026-06-30", sources=(FIN,),
+        data={"revenue_yi": 124.43},
+    )
+    try:
+        research = agent_mod.ResearchAgent(client, default_company="605499")
+        answer = research.ask("它靠什么赚钱")
+    finally:
+        agent_mod.run_tool = original
+
+    assert answer.text == "能量饮料是主力[[finance:605499:2026-06-30]]。"
+    assert [source.id for source in answer.citations] == [FIN.id]
+    assert answer.trace == [{
+        "round": 1, "name": "get_finance", "arguments": {},
+        "ok": True, "company": "605499", "as_of": "2026-06-30",
+        "error": None, "sources": [FIN.id],
+    }], answer.trace
+    assert answer.issues == [] and answer.rounds == 2
+    assert len(client.calls) == 2
+    first, second = client.calls
+    assert first["model"] == "deepseek-flash"
+    assert first["messages"][0]["role"] == "system"
+    assert "第一问" in first["messages"][0]["content"]
+    assert first["messages"][-1] == {"role": "user", "content": "它靠什么赚钱"}
+    assert second["messages"][2]["role"] == "assistant"
+    assert second["messages"][2]["tool_calls"][0]["id"] == "c1"
+    tool_message = second["messages"][3]
+    assert tool_message["role"] == "tool" and tool_message["tool_call_id"] == "c1"
+    assert "finance:605499:2026-06-30" in tool_message["content"]
+
+
+def test_unknown_citation_and_round_limit() -> None:
+    client = FakeClient([
+        response(tool_calls=[tool_call("c1", "get_finance", {})]),
+        response(content="营收增长[[nope]]。"),
+    ])
+    original = agent_mod.run_tool
+    agent_mod.run_tool = lambda *args, **kwargs: ToolResult(
+        ok=True, company="605499", as_of="2026-06-30", sources=(FIN,), data={}
+    )
+    try:
+        answer = agent_mod.ResearchAgent(
+            client, default_company="605499"
+        ).ask("营收怎么样")
+    finally:
+        agent_mod.run_tool = original
+    assert "[?]" in answer.text and answer.issues[0]["type"] == "unknown_citation"
+
+    looping = FakeClient([
+        response(tool_calls=[tool_call("c1", "get_finance", {})]),
+        response(tool_calls=[tool_call("c2", "get_finance", {})]),
+    ])
+    agent_mod.run_tool = lambda *args, **kwargs: ToolResult(
+        ok=True, company="605499", as_of="2026-06-30", sources=(FIN,), data={}
+    )
+    try:
+        answer = agent_mod.ResearchAgent(
+            looping, default_company="605499", max_rounds=2
+        ).ask("继续")
+    finally:
+        agent_mod.run_tool = original
+    assert answer.text == ""
+    assert any(issue["type"] == "rounds_exhausted" for issue in answer.issues)
+    assert len(looping.calls) == 2
+
+
+def test_tool_error_observation_and_multi_turn() -> None:
+    client = FakeClient([
+        response(tool_calls=[tool_call("c1", "get_finance", {})]),
+        response(content="没有拿到财报，无法判断。"),
+        response(content="上一轮已经说过，资料不足。"),
+    ])
+    original = agent_mod.run_tool
+    agent_mod.run_tool = lambda *args, **kwargs: ToolResult(
+        ok=False, company="000001", error="没有财报数据"
+    )
+    try:
+        research = agent_mod.ResearchAgent(client, default_company="000001")
+        first = research.ask("它靠什么赚钱")
+        second = research.ask("再确认一下")
+    finally:
+        agent_mod.run_tool = original
+    assert first.text.startswith("没有拿到财报")
+    tool_message = client.calls[1]["messages"][3]
+    assert "没有财报数据" in tool_message["content"]
+    history = client.calls[2]["messages"]
+    assert {"role": "user", "content": "它靠什么赚钱"} in history
+    assert {"role": "assistant", "content": "没有拿到财报，无法判断。"} in history
+    assert history[-1] == {"role": "user", "content": "再确认一下"}
+
+
+def test_comparison_sources() -> None:
+    client = FakeClient([
+        response(tool_calls=[
+            tool_call("c1", "get_finance", {"company": "600519"}),
+            tool_call("c2", "get_finance", {}),
+        ]),
+        response(content=(
+            "茅台更成熟[[finance:600519:2026-06-30]]，"
+            "东鹏增速更高[[finance:605499:2026-06-30]]。"
+        )),
+    ])
+    seen = []
+
+    def fake_run_tool(name, arguments, default_company=None):
+        seen.append((name, arguments, default_company))
+        code = arguments.get("company") or default_company
+        source = MT if code == "600519" else FIN
+        return ToolResult(ok=True, company=code, as_of="2026-06-30",
+                          sources=(source,), data={})
+
+    original = agent_mod.run_tool
+    agent_mod.run_tool = fake_run_tool
+    try:
+        answer = agent_mod.ResearchAgent(
+            client, default_company="605499"
+        ).ask("跟茅台比，它靠什么赚钱")
+    finally:
+        agent_mod.run_tool = original
+    assert seen == [
+        ("get_finance", {"company": "600519"}, "605499"),
+        ("get_finance", {}, "605499"),
+    ], seen
+    assert [source.id for source in answer.citations] == [MT.id, FIN.id]
+
+
+def test_retry_once() -> None:
+    class FlakyClient(FakeClient):
+        def __init__(self, responses, failures=1):
+            super().__init__(responses)
+            self.failures = failures
+
+        def _create(self, **kwargs):
+            if self.failures:
+                self.failures -= 1
+                raise RuntimeError("接口超时")
+            return super()._create(**kwargs)
+
+    client = FlakyClient([response(content="每年卖出几十亿瓶饮料。")])
+    answer = agent_mod.ResearchAgent(client, default_company="605499").ask("靠什么赚钱")
+    assert answer.text == "每年卖出几十亿瓶饮料。"
+    assert answer.rounds == 1
+    assert len(client.calls) == 1
+
+    dead = FlakyClient([], failures=2)
+    try:
+        agent_mod.ResearchAgent(dead, default_company="605499").ask("靠什么赚钱")
+    except agent_mod.AssistantError as error:
+        assert "接口超时" in str(error)
+        assert "DEEPSEEK_API_KEY" not in str(error)
+    else:
+        raise AssertionError("两次失败应抛 AssistantError")
+
+
+def test_use_company() -> None:
+    client = FakeClient([])
+    research = agent_mod.ResearchAgent(client, default_company="605499")
+    original = agent_mod.run_tool
+    agent_mod.run_tool = lambda *args, **kwargs: ToolResult(
+        ok=True, company="600519", sources=(), data={"code": "600519"}
+    )
+    try:
+        assert research.use_company("贵州茅台") == "600519"
+        assert research.default_company == "600519"
+    finally:
+        agent_mod.run_tool = original
+
+    agent_mod.run_tool = lambda *args, **kwargs: ToolResult(
+        ok=False, error="没有找到「不存在」"
+    )
+    try:
+        try:
+            research.use_company("不存在")
+        except agent_mod.AssistantError as error:
+            assert "没有找到" in str(error)
+        else:
+            raise AssertionError("解析失败应抛 AssistantError")
+    finally:
+        agent_mod.run_tool = original
+
+
+def main() -> None:
+    test_loop_and_citation()
+    test_unknown_citation_and_round_limit()
+    test_tool_error_observation_and_multi_turn()
+    test_comparison_sources()
+    test_retry_once()
+    test_use_company()
+    print("PASS")
+    sys.stdout.flush()
+    os._exit(0)
+
+
+if __name__ == "__main__":
+    main()
