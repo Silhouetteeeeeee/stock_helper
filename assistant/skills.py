@@ -34,7 +34,7 @@ BUSINESS_MODEL = Skill(
 3. 看成本与利润质量：主要成本项、毛利率水平、费用率。工具数据里没有非经常性损益时，明确写「资料不足」，不要猜。
 4. 写 2-3 条关键不确定点：哪个数据最可能被误读、哪块业务最看不懂。
 
-取数建议：get_company_profile 看主营描述与行业；get_segments 看产品与地区构成；get_finance 看最新一期毛利率、净利率与费用趋势；get_announcements 看是否有重大变化。对照另一家公司时分别取数、分别引用。""",
+取数建议：get_company_profile 看主营描述与行业；get_segments 看产品与地区构成；get_finance 看最新一期毛利率与净利率；费用率及其多年趋势用 get_financial_history 的年度序列（销售、管理、研发费用率都在里面）；get_announcements 看是否有重大变化。对照另一家公司时分别取数、分别引用。""",
 )
 
 MOAT = Skill(
