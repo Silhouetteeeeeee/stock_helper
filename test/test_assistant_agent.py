@@ -95,7 +95,7 @@ def test_loop_and_citation() -> None:
     first, second = client.calls
     assert first["model"] == "deepseek-flash"
     assert first["messages"][0]["role"] == "system"
-    assert "第一问" in first["messages"][0]["content"]
+    assert "load_skill" in first["messages"][0]["content"]
     assert first["messages"][-1] == {"role": "user", "content": "它靠什么赚钱"}
     assert second["messages"][2]["role"] == "assistant"
     assert second["messages"][2]["tool_calls"][0]["id"] == "c1"
@@ -310,6 +310,63 @@ def test_prompt_has_concrete_citation_example() -> None:
     assert "[[引用id]]" not in SYSTEM_PROMPT
 
 
+def test_prompt_is_skill_based() -> None:
+    from assistant.prompts import SYSTEM_PROMPT
+
+    assert "load_skill" in SYSTEM_PROMPT
+    assert "宏观" in SYSTEM_PROMPT
+    assert "多个" in SYSTEM_PROMPT
+    # 具体判据必须只在 skill 里，不能回到系统提示词
+    for phrase in ("第一问", "第二问", "护城河", "三句话", "品牌", "可证伪"):
+        assert phrase not in SYSTEM_PROMPT, phrase
+    assert "只回答第一问" not in SYSTEM_PROMPT
+
+
+def test_broad_question_loads_both_skills() -> None:
+    client = FakeClient([
+        response(tool_calls=[
+            tool_call("s1", "load_skill", {"name": "business_model"}),
+            tool_call("s2", "load_skill", {"name": "moat"}),
+        ]),
+        response(tool_calls=[tool_call("c1", "get_financial_history", {})]),
+        response(content=(
+            "第一问：卖能量饮料[[finance:605499:2026-06-30]]。\n"
+            "第二问：渠道规模是主要优势[[finance_history:605499:2021-2025]]。"
+        )),
+    ])
+    history = Source(
+        "finance_history:605499:2021-2025", "财报·年度序列",
+        "东鹏饮料 2021-2025 年度财务", "2025-12-31", "2026-10-24 15:00:00",
+    )
+    def fake_run_tool(name, arguments, default_company=None):
+        if name == "load_skill":
+            return ToolResult(ok=True, data={})
+        return ToolResult(
+            ok=True, company="605499", as_of="2025-12-31",
+            sources=(FIN, history), data={},
+        )
+
+    original = agent_mod.run_tool
+    agent_mod.run_tool = fake_run_tool
+    try:
+        answer = agent_mod.ResearchAgent(
+            client, default_company="605499"
+        ).ask("这家公司基本面如何")
+    finally:
+        agent_mod.run_tool = original
+
+    names = [step["name"] for step in answer.trace]
+    assert names == [
+        "load_skill", "load_skill", "get_financial_history"
+    ], names
+    assert answer.trace[0]["arguments"] == {"name": "business_model"}
+    assert answer.trace[1]["arguments"] == {"name": "moat"}
+    assert "第一问" in answer.text and "第二问" in answer.text
+    assert [source.id for source in answer.citations] == [
+        FIN.id, history.id
+    ], answer.citations
+
+
 def test_use_company() -> None:
     client = FakeClient([])
     research = agent_mod.ResearchAgent(client, default_company="605499")
@@ -348,6 +405,8 @@ def main() -> None:
     test_tool_exception_becomes_observation()
     test_api_failure_rolls_back_history()
     test_prompt_has_concrete_citation_example()
+    test_prompt_is_skill_based()
+    test_broad_question_loads_both_skills()
     test_use_company()
     print("PASS")
     sys.stdout.flush()
