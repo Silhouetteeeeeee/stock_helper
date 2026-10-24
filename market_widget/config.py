@@ -35,6 +35,7 @@ class Palette:
     text: str = "#f2f4f8"              # 主文字
     text_muted: str = "#8b93a5"        # 次要文字
     accent: str = "#4c8dff"            # 强调色
+    avg: str = "#f5a623"               # 分时均价线（橙）
     up: str = "#ff4d4f"                # 涨（红）
     down: str = "#22c55e"              # 跌（绿）
     flat: str = "#8b93a5"              # 平（灰）

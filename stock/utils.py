@@ -8,9 +8,47 @@ from . import db_service as db
 from functools import lru_cache
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
+import pandas as pd
 
 
 CHINA_TZ = ZoneInfo("Asia/Shanghai")
+
+def get_stock_minute_price(code: str) -> tuple[pd.DataFrame, float]:
+    """
+    获取股票最近交易日分时交易数据及前一交易日收盘价。
+
+    :param code: 带交易所前缀的代码，例如 "sh605499"
+    :return:
+        (df_last, pre_close)
+        df_last 包含以下列：
+        * day: 时间
+        * open: 开盘价
+        * high: 最高价
+        * low: 最低价
+        * close: 收盘价
+        * volume: 成交量
+        * amount: 成交额
+    """
+    df = ak.stock_zh_a_minute(symbol=code, period="1")
+    if df.empty or "day" not in df.columns:
+        return df, 0.0
+
+    df["day"] = pd.to_datetime(df["day"])
+    dates = df["day"].dt.date
+    last_day = dates.max()
+    df_last = df[dates == last_day].reset_index(drop=True)
+
+    # 用上一交易日最后一根分钟线的收盘价作为昨收；
+    # 数据只包含当天时退回当天开盘价。
+    previous = df[dates < last_day]
+    if not previous.empty and "close" in previous.columns:
+        pre_close = float(previous["close"].iloc[-1])
+    elif not df_last.empty and "open" in df_last.columns:
+        pre_close = float(df_last["open"].iloc[0])
+    else:
+        pre_close = 0.0
+
+    return df_last, pre_close
 
 def get_stock_prefix(code: str) -> tuple[str, str]:
     """

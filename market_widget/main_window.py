@@ -10,6 +10,7 @@
     ``window.set_stock_quotes(quotes)``   刷新自选股
     ``window.push_quotes(quotes)``        指数与自选股一起刷新
     ``window.set_watchlist(items)``       重建自选股列表
+    ``window.set_timeshare(points, pre_close)``  刷新分时图
     ``window.data_requested``             信号：界面需要一份新数据时发出
 """
 
@@ -52,7 +53,7 @@ from .theme import (
     numeric_font,
     ui_font,
 )
-from .ui import IndexPanel, InputPanel, TitleBar, WatchListPanel
+from .ui import IndexPanel, InputPanel, MinutePoint, TimeShareChart, TitleBar, WatchListPanel
 
 WINDOW_TITLE = "行情速览"
 
@@ -129,6 +130,10 @@ class MarketWidget(QWidget):
         body_layout.setSpacing(0)
         self._index_panel = IndexPanel(INDEX_NAMES, self._body)  # 大盘指数三列面板
         body_layout.addWidget(self._index_panel)
+        body_layout.addWidget(self._divider(self._body))
+        body_layout.addWidget(self._section_title("分时", self._body))
+        self._timeshare = TimeShareChart(self._body)  # 分时图（数据由外部注入）
+        body_layout.addWidget(self._timeshare)
         body_layout.addWidget(self._divider(self._body))
         body_layout.addWidget(self._section_title("自选股", self._body))
         self._watchlist = WatchListPanel(DEFAULT_WATCHLIST, self._body)  # 自选股列表
@@ -230,6 +235,10 @@ class MarketWidget(QWidget):
 
     def set_stock_quotes(self, quotes: list[Quote]) -> None:
         self._watchlist.update_quotes(quotes)
+
+    def set_timeshare(self, points: list[MinutePoint], pre_close: float) -> None:
+        """刷新分时图（必须在主线程调用）。"""
+        self._timeshare.set_data(points, pre_close)
 
     def push_quotes(self, quotes: list[Quote]) -> None:
         """指数与自选股一起刷新：代码或名称命中的记录会自动归位。"""
