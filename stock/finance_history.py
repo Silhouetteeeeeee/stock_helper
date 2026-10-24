@@ -125,7 +125,9 @@ def _yi(value) -> float | None:
 
 
 def _ratio(part, revenue) -> float | None:
-    if part is None or revenue is None or revenue == 0:
+    # 费用科目为负多是冲回或数据源符号问题，负收入也没有可比口径；
+    # 这两种情况宁可留空，也不能输出负费用率冒充真实比率
+    if part is None or part < 0 or revenue is None or revenue <= 0:
         return None
     return round(part / revenue * 100.0, 1)
 

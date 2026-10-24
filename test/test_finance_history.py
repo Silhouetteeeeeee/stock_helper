@@ -50,6 +50,17 @@ def test_history_edge_cases() -> None:
     row = history_from_rows(zero)["years"][0]
     assert row["selling_ratio"] is None and row["gross_margin"] is None
 
+    # 费用为负（科目冲回）或收入为负时，不能算出负费用率冒充真实比率
+    negative = [{"report_date": "2025-12-31", "revenue": 100e8,
+                 "cost_of_revenue": 60e8, "gross_margin": 40.0,
+                 "selling_expense": -5e8, "admin_expense": -1e8}]
+    row = history_from_rows(negative)["years"][0]
+    assert row["selling_ratio"] is None, row
+    assert row["admin_ratio"] is None, row
+    row = history_from_rows([{**negative[0], "revenue": -100e8,
+                              "selling_expense": 5e8}])["years"][0]
+    assert row["selling_ratio"] is None, row
+
     # 中间缺一年要写进 notes，不能悄悄压缩成连续四年
     gappy = history_from_rows([
         {"report_date": "2022-12-31", "revenue": 1e8},
