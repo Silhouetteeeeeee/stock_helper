@@ -146,7 +146,7 @@ def test_schemas() -> None:
     assert names == [
         "load_skill", "resolve_company", "get_company_profile", "get_finance",
         "get_financial_history", "get_segments", "get_management",
-        "get_shareholders", "get_peers", "get_announcements",
+        "get_shareholders", "get_peers", "get_dividends", "get_announcements",
         "get_valuation", "calc_valuation",
     ], names
     for item in tools.schemas():
@@ -720,6 +720,80 @@ def test_peers_tool() -> None:
     assert result.data["notes"] == ["估值日期与财报期不同"], result.data
 
 
+def test_dividends_tool() -> None:
+    latest = {
+        "report_date": "2026-06-30", "fiscal_year": 2026,
+        "period_label": "中报", "plan": "10派30.00元(含税,扣税后27.00元)",
+        "plan_short": "10派30.00元", "status": "实施分配",
+        "cash_per_10": 30.0, "cash_per_share": 3.0,
+        "cash_total": 2_202_597_930.0, "bonus_per_10": None,
+        "transfer_per_10": None, "share_bonus_per_10": None,
+        "total_shares": 734_199_310, "yield_pct": 2.621231979,
+        "eps": 3.9949, "plan_notice_date": "2026-07-31",
+        "notice_date": "2026-09-18", "record_date": "2026-09-23",
+        "ex_date": "2026-09-24",
+    }
+    year = {
+        "year": 2025, "periods": ["2025-06-30", "2025-12-31"],
+        "report_count": 2, "cash_total": 2_745_521_025.0,
+        "cash_complete": True, "net_profit": 4_415_263_147.79,
+        "payout_ratio": 62.2, "payout_basis": "归母净利润",
+        "share_bonus_count": 1,
+    }
+    data = {
+        "available": True, "code": "605499", "name": "东鹏饮料",
+        "as_of": "2026-06-30", "fetched_at": "2026-10-25 10:00:00",
+        "stale": False, "has_dividends": True,
+        "latest": latest, "annual": [year], "events": [latest],
+        "counts": {
+            "events": 9, "years": 6, "cash_years": 6,
+            "consecutive_years": 5, "latest_cash_year": 2026,
+        },
+        "notes": ["分红总额按税前每 10 股派息估算"],
+    }
+    captured = {}
+
+    def fake_build(code: str, **kwargs) -> dict:
+        captured.update(kwargs)
+        return data
+
+    original = tools.build_dividends
+    tools.build_dividends = fake_build  # type: ignore[assignment]
+    try:
+        result = tools.run_tool(
+            "get_dividends", {"years": 99}, default_company="605499"
+        )
+    finally:
+        tools.build_dividends = original  # type: ignore[assignment]
+
+    assert captured["years"] == 20, captured
+    assert result.ok is True, result
+    assert result.as_of == "2026-06-30", result
+    assert result.sources[0].id == "dividends:605499:2026-06-30", result.sources
+    assert result.sources[0].label == "分红历史", result.sources
+    assert result.sources[0].url == (
+        "https://data.eastmoney.com/yjfp/detail/605499.html"
+    ), result.sources
+    assert result.sources[0].detail == "东鹏饮料 分红 2026-06-30", result.sources
+
+    event = result.data["latest"]
+    assert event["cash_per_10"] == 30.0, event
+    assert event["cash_per_share"] == 3.0, event
+    assert event["cash_total_yi"] == 22.03, event
+    assert event["total_shares_wan"] == 73419.93, event
+    assert event["yield_pct"] == 2.62, event
+    assert event["eps"] == 3.99, event
+    assert event["plan_short"] == "10派30.00元", event
+
+    annual = result.data["annual"][0]
+    assert annual["cash_total_yi"] == 27.46, annual
+    assert annual["net_profit_yi"] == 44.15, annual
+    assert annual["payout_ratio"] == 62.2, annual
+    assert annual["payout_basis"] == "归母净利润", annual
+    assert result.data["counts"]["consecutive_years"] == 5, result.data
+    assert result.data["notes"] == ["分红总额按税前每 10 股派息估算"], result.data
+
+
 def test_segments_region_missing() -> None:
     global REGION
     REGION = False
@@ -1063,6 +1137,7 @@ def main() -> None:
     test_management_tool()
     test_shareholders_tool()
     test_peers_tool()
+    test_dividends_tool()
     test_segments_region_missing()
     test_announcements_sources()
     test_valuation()

@@ -92,7 +92,8 @@ def test_management_skill() -> None:
     text = skill.instructions
     for phrase in ("诚信", "承诺", "关联交易", "资本配置", "股权激励",
                    "回购", "资料不足", "get_announcements", "get_management",
-                   "get_shareholders", "薪酬", "持股", "股东户数", "红旗"):
+                   "get_shareholders", "get_dividends", "分红率", "薪酬",
+                   "持股", "股东户数", "红旗"):
         assert phrase in text, phrase
     assert "标题不等于事实" in text
     assert "无法证伪" in text
@@ -105,7 +106,8 @@ def test_valuation_skill() -> None:
     text = skill.instructions
     for phrase in ("PE", "PB", "分位", "自由现金流", "DCF", "目标价",
                    "每股收益", "隐含", "资料不足", "get_valuation",
-                   "get_peers", "同业", "rank"):
+                   "get_peers", "同业", "rank", "get_dividends", "分红率",
+                   "股息率"):
         assert phrase in text, phrase
     assert "不给单一精确目标价" in text
     assert "不要输出 DCF 数字" in text

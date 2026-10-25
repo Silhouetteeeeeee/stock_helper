@@ -15,6 +15,8 @@ import math
 
 from stock.announcements import build_announcements
 from stock.db_service import get_all_stocks, get_stock, get_stock_by_name
+from stock.dividends import PAGE_URL as DIVIDEND_URL
+from stock.dividends import build_dividends
 from stock.finance_history import build_history
 from stock.finance_service import ensure_financials
 from stock.finance_snapshot import (
@@ -230,6 +232,29 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "get_dividends",
+            "description": (
+                "分红历史：按报告期列现金分红（税前每 10 股）、送股/转增、"
+                "实施进度与除权除息日；按年度汇总现金分红总额、归母净利润与"
+                "分红率，并给出连续分红年数。分红总额按报告期总股本估算，"
+                "分红率按报告期归年"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "years": {
+                        "type": "integer",
+                        "description": "回看年数，1-20，默认 10",
+                    },
+                    "company": _COMPANY,
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_announcements",
             "description": "近期公告：带标签的事件（回购、减持、重大合同等）",
             "parameters": {
@@ -419,6 +444,8 @@ def run_tool(
             return _shareholders(code, arguments)
         if name == "get_peers":
             return _peers(code, arguments)
+        if name == "get_dividends":
+            return _dividends(code, arguments)
         if name == "get_announcements":
             return _announcements(code, arguments)
         if name == "get_valuation":
@@ -919,6 +946,48 @@ def _peers(code: str, arguments: dict) -> ToolResult:
     )
 
 
+def _dividends(code: str, arguments: dict) -> ToolResult:
+    try:
+        years = int(arguments.get("years", 10))
+    except (TypeError, ValueError):
+        years = 10
+    years = min(max(years, 1), 20)
+
+    data = build_dividends(code, years=years)
+    events = [_dividend_event(item) for item in data.get("events") or []]
+    annual = [_dividend_year(item) for item in data.get("annual") or []]
+    latest = _dividend_event(data["latest"]) if data.get("latest") else None
+
+    name = data.get("name")
+    as_of = data.get("as_of") or ""
+    source = Source(
+        id=f"dividends:{code}:{as_of}" if as_of else f"dividends:{code}",
+        label="分红历史",
+        detail=f"{name or code} 分红 {as_of}".strip(),
+        as_of=as_of,
+        fetched_at=data.get("fetched_at") or "",
+        url=DIVIDEND_URL.format(code=code),
+    )
+    return ToolResult(
+        ok=True,
+        company=code,
+        as_of=as_of or None,
+        sources=(source,),
+        data={
+            "code": code,
+            "name": name,
+            "as_of": as_of or None,
+            "has_dividends": data.get("has_dividends", False),
+            "latest": latest,
+            "annual": annual,
+            "events": events,
+            "counts": data.get("counts") or {},
+            "notes": data.get("notes") or [],
+            "stale": data.get("stale", False),
+        },
+    )
+
+
 def _announcements(code: str, arguments: dict) -> ToolResult:
     try:
         days = int(arguments.get("days") or 180)
@@ -1408,6 +1477,48 @@ def _holder_count_row(item: dict) -> dict:
         "focus": item.get("focus"),
         "top10_ratio": _pct(item.get("top10_ratio")),
         "free_float_top10_ratio": _pct(item.get("free_float_top10_ratio")),
+    }
+
+
+def _dividend_event(item: dict) -> dict:
+    """分红方案一行：每 10 股口径保留两位，金额换亿元。"""
+    item = item or {}
+    return {
+        "report_date": item.get("report_date"),
+        "fiscal_year": item.get("fiscal_year"),
+        "period_label": item.get("period_label"),
+        "plan": item.get("plan"),
+        "plan_short": item.get("plan_short"),
+        "status": item.get("status"),
+        "cash_per_10": _round(item.get("cash_per_10"), 2),
+        "cash_per_share": _round(item.get("cash_per_share"), 3),
+        "cash_total_yi": _yi(item.get("cash_total")),
+        "bonus_per_10": _round(item.get("bonus_per_10"), 2),
+        "transfer_per_10": _round(item.get("transfer_per_10"), 2),
+        "share_bonus_per_10": _round(item.get("share_bonus_per_10"), 2),
+        "total_shares_wan": _wan(item.get("total_shares")),
+        "yield_pct": _round(item.get("yield_pct"), 2),
+        "eps": _round(item.get("eps"), 2),
+        "plan_notice_date": item.get("plan_notice_date"),
+        "notice_date": item.get("notice_date"),
+        "record_date": item.get("record_date"),
+        "ex_date": item.get("ex_date"),
+    }
+
+
+def _dividend_year(item: dict) -> dict:
+    """年度分红汇总：分红率保留一位，金额换亿元。"""
+    item = item or {}
+    return {
+        "year": item.get("year"),
+        "periods": item.get("periods") or [],
+        "report_count": item.get("report_count"),
+        "cash_total_yi": _yi(item.get("cash_total")),
+        "cash_complete": item.get("cash_complete", True),
+        "net_profit_yi": _yi(item.get("net_profit")),
+        "payout_ratio": _pct(item.get("payout_ratio")),
+        "payout_basis": item.get("payout_basis"),
+        "share_bonus_count": item.get("share_bonus_count"),
     }
 
 
