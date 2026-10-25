@@ -41,6 +41,8 @@ PANEL_ITEMS = 2
 RETENTION_DAYS = 400
 # 接口单页上限就是 100
 PAGE_SIZE = 100
+# 单页只够高频公司回溯半年，按页往回翻；翻到保留窗口外就停
+DEFAULT_PAGES = 5
 
 # 先判断利空，再判断利好：同一份公告里两类词都有时按利空算
 WARNING_RULES = (
@@ -225,20 +227,78 @@ def format_items(announcements: dict, limit: int | None = SUMMARY_ITEMS) -> list
 # ---------------------------------------------------------------------------
 # 取数与分类
 # ---------------------------------------------------------------------------
-def fetch_announcements(code: str, page_size: int = PAGE_SIZE) -> list[dict]:
-    """抓取最近一页公告（接口单页最多 100 条）。"""
+def fetch_announcements(
+    code: str,
+    page_size: int = PAGE_SIZE,
+    max_pages: int = DEFAULT_PAGES,
+) -> list[dict]:
+    """按页抓取保留窗口内的公告。
+
+    单页只有 100 条，高频公告的公司（尤其 A+H 两地上市）100 条只够回溯
+    半年，所以一直往后翻，直到翻过 ``RETENTION_DAYS`` 或接口没有下一页。
+    窗口外的记录不返回——入库时也会被裁掉。
+    """
     code = normalize_stock_code(code)
     prefix, digits = su.get_stock_prefix(code)
     if prefix not in ("SH", "SZ", "BJ"):
         raise AnnouncementError(f"{code}：无法判断交易所")
 
+    page_size = min(max(int(page_size), 1), PAGE_SIZE)
+    max_pages = max(int(max_pages), 1)
+    cutoff = (date.today() - timedelta(days=RETENTION_DAYS)).isoformat()
+    fetched_at = _now()
+    rows: dict[str, dict] = {}
+
+    for page in range(1, max_pages + 1):
+        items = _fetch_page(digits, page, page_size, code)
+        if not items:
+            if page == 1:
+                raise AnnouncementError(f"{code}：公告接口没有返回数据")
+            break
+
+        oldest = None
+        for raw in items:
+            art_code = _text(raw.get("art_code"))
+            notice_date = _date_text(raw.get("notice_date"))
+            title = _text(raw.get("title_ch") or raw.get("title"))
+            if not art_code or not notice_date or not title:
+                continue
+            if notice_date < cutoff:
+                continue
+            oldest = notice_date if oldest is None else min(oldest, notice_date)
+            title = _strip_prefix(title, raw.get("codes") or [])
+            categories = [
+                str(column.get("column_name")).strip()
+                for column in raw.get("columns") or []
+                if column.get("column_name")
+            ]
+            rows[art_code] = {
+                "code": code,
+                "art_code": art_code,
+                "notice_date": notice_date,
+                "title": title,
+                "categories": "、".join(categories),
+                "url": DETAIL_URL.format(code=code, art_code=art_code),
+                "fetched_at": fetched_at,
+            }
+
+        if len(items) < page_size:
+            break
+        if oldest is None or oldest < cutoff:
+            break
+
+    return list(rows.values())
+
+
+def _fetch_page(digits: str, page: int, page_size: int, code: str) -> list[dict]:
+    """抓一页原始公告条目；接口失败统一抛 ``AnnouncementError``。"""
     try:
         response = requests.get(
             ENDPOINT,
             params={
                 "sr": -1,
-                "page_size": min(page_size, PAGE_SIZE),
-                "page_index": 1,
+                "page_size": page_size,
+                "page_index": page,
                 "ann_type": "A",
                 "client_source": "web",
                 "stock_list": digits,
@@ -256,33 +316,7 @@ def fetch_announcements(code: str, page_size: int = PAGE_SIZE) -> list[dict]:
         raise AnnouncementError(f"获取公告失败：{error}") from error
 
     data = payload.get("data") or {}
-    if not data.get("list"):
-        raise AnnouncementError(f"{code}：公告接口没有返回数据")
-
-    fetched_at = _now()
-    rows: dict[str, dict] = {}
-    for raw in data["list"]:
-        art_code = _text(raw.get("art_code"))
-        notice_date = _date_text(raw.get("notice_date"))
-        title = _text(raw.get("title_ch") or raw.get("title"))
-        if not art_code or not notice_date or not title:
-            continue
-        title = _strip_prefix(title, raw.get("codes") or [])
-        categories = [
-            str(column.get("column_name")).strip()
-            for column in raw.get("columns") or []
-            if column.get("column_name")
-        ]
-        rows[art_code] = {
-            "code": code,
-            "art_code": art_code,
-            "notice_date": notice_date,
-            "title": title,
-            "categories": "、".join(categories),
-            "url": DETAIL_URL.format(code=code, art_code=art_code),
-            "fetched_at": fetched_at,
-        }
-    return list(rows.values())
+    return data.get("list") or []
 
 
 def classify(title: str, categories: str = "") -> tuple[list[str], str | None]:

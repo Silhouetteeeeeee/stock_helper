@@ -153,6 +153,104 @@ def test_window_and_edges() -> None:
     assert "本地缓存" in stale["flags"][-1]["message"], stale["flags"]
 
 
+def _raw(art: str, notice_date: str, title: str) -> dict:
+    return {
+        "art_code": art,
+        "notice_date": notice_date + " 00:00:00",
+        "title_ch": f"东鹏饮料:{title}",
+        "codes": [{"short_name": "东鹏饮料"}],
+        "columns": [{"column_name": "临时公告"}],
+    }
+
+
+def _payload(items: list[dict], page: int, total: int = 999) -> dict:
+    return {"data": {"list": items, "page_index": page, "page_size": 100, "total_hits": total}}
+
+
+class _FakeResponse:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        pass
+
+    def json(self) -> dict:
+        return self._payload
+
+
+def test_paging() -> None:
+    """只抓第 1 页会漏掉半年前的公告，必须按页往回翻。"""
+    original_fetch = ann.fetch_announcements
+    original_get = ann.requests.get
+    pages = {
+        1: [_raw(f"P1-{i}", "2026-10-10", f"第一页第{i}条") for i in range(ann.PAGE_SIZE)],
+        2: [_raw(f"P2-{i}", "2026-03-01", f"第二页第{i}条") for i in range(ann.PAGE_SIZE)],
+        3: [_raw("P3-0", "2025-11-01", "第三页唯一一条")],
+    }
+    seen: list[int] = []
+
+    def fake_get(url, params=None, **kwargs):
+        page = params["page_index"]
+        seen.append(page)
+        return _FakeResponse(_payload(pages.get(page, []), page))
+
+    ann.requests.get = fake_get  # type: ignore[assignment]
+    try:
+        rows = ann.fetch_announcements(CODE)
+        assert seen == [1, 2, 3], seen                      # 短页之后停止
+        assert len(rows) == ann.PAGE_SIZE * 2 + 1, len(rows)
+
+        # 翻页上限：即使每页都是满的，也不能无限打接口
+        seen.clear()
+        full = {page: [_raw(f"X{page}-{i}", "2026-10-10", f"第{page}页") for i in range(ann.PAGE_SIZE)]
+                for page in range(1, 20)}
+        ann.requests.get = lambda url, params=None, **kw: (
+            seen.append(params["page_index"]), _FakeResponse(_payload(full.get(params["page_index"], []), params["page_index"])))[1]  # type: ignore[assignment]
+        capped = ann.fetch_announcements(CODE, max_pages=3)
+        assert seen == [1, 2, 3], seen
+        assert len(capped) == ann.PAGE_SIZE * 3, len(capped)
+
+        # 已经翻过保留窗口就不必再翻：老公告入库也会被裁掉
+        seen.clear()
+
+        def old_get(url, params=None, **kwargs):
+            page = params["page_index"]
+            seen.append(page)
+            items = [_raw(f"OLD{page}-{i}", "2024-01-0%d" % (i % 9 + 1), "很老的公告")
+                     for i in range(ann.PAGE_SIZE)]
+            return _FakeResponse(_payload(items, page))
+
+        ann.requests.get = old_get  # type: ignore[assignment]
+        assert ann.fetch_announcements(CODE) == []
+        assert seen == [1], seen                            # 第 1 页就越界，只打一次
+
+        # 同一份公告在相邻页重复出现时只留一条
+        seen.clear()
+        dup = _raw("DUP", "2026-10-10", "跨页重复")
+        ann.requests.get = lambda url, params=None, **kw: _FakeResponse(_payload(
+            [_raw(f"A{params['page_index']}-{i}", "2026-10-10", "第%d页" % params["page_index"])
+             for i in range(ann.PAGE_SIZE - 1)] + [dup], params["page_index"]))  # type: ignore[assignment]
+        deduped = ann.fetch_announcements(CODE, max_pages=2)
+        assert sum(1 for row in deduped if row["art_code"] == "DUP") == 1, deduped
+    finally:
+        ann.requests.get = original_get  # type: ignore[assignment]
+        ann.fetch_announcements = original_fetch  # type: ignore[assignment]
+
+    # 第一页就失败时仍然报错，不能假装成功
+    def broken_get(url, params=None, **kwargs):
+        raise RuntimeError("连接被重置")
+
+    ann.requests.get = broken_get  # type: ignore[assignment]
+    try:
+        ann.fetch_announcements(CODE)
+    except ann.AnnouncementError as error:
+        assert "连接被重置" in str(error), error
+    else:
+        raise AssertionError("接口失败应该抛 AnnouncementError")
+    finally:
+        ann.requests.get = original_get  # type: ignore[assignment]
+
+
 def test_cache() -> None:
     tmpdir = tempfile.mkdtemp(prefix="announcements_test_")
     ann.DB_PATH = os.path.join(tmpdir, "stock.db")
@@ -235,6 +333,7 @@ def main() -> None:
     test_classify()
     test_basic()
     test_window_and_edges()
+    test_paging()
     test_cache()
     test_helpers()
     print("PASS")
