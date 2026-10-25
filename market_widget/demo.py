@@ -264,6 +264,9 @@ class DemoFeed(QObject):
 
 
 def main() -> int:
+    from assistant.env import load_env
+
+    load_env()   # 从项目根的 .env 读配置（雪球 token 等）
     app = QApplication.instance() or QApplication(sys.argv)
     # Qt 在 Windows 上会吞掉 Ctrl+C，这里恢复默认的 SIGINT 行为让其正常退出。
     signal.signal(signal.SIGINT, signal.SIG_DFL)

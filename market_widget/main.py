@@ -612,6 +612,9 @@ class StockMonitor(QWidget):
 
 
 if __name__ == "__main__":
+    from assistant.env import load_env
+
+    load_env()   # 从项目根的 .env 读配置（雪球 token 等）
     app = QApplication(sys.argv)
     window = StockMonitor()
     window.show()
