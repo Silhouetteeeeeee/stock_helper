@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 
 from stock.analyst_views import build_analyst_views
 from stock.announcements import build_announcements
@@ -604,6 +605,38 @@ def resolve_code(
         names = "、".join(f"{item['name']}({item['code']})" for item in candidates)
         return None, f"没有找到「{value}」，你是不是指：{names}", candidates
     return None, f"没有找到「{value}」", []
+
+
+def find_company_in_text(text) -> tuple[str, str] | None:
+    """从一句话里找出提到的公司，返回 ``(code, name)``；找不到返回 None。
+
+    先认六位代码，再按本地股票简称做匹配。简称同时出现时按先后顺序取
+    第一家——用户先说的是哪家，就聊哪家。
+    """
+    text = str(text or "").strip()
+    if not text:
+        return None
+
+    match = re.search(r"(?<!\d)(\d{6})(?!\d)", text)
+    if match:
+        # 只认本地股票表里的代码，避免把句子里的六位数字当成股票
+        stock = get_stock(match.group(1))
+        if stock is not None:
+            return stock.code, stock.name or stock.code
+
+    best: tuple[int, str, str] | None = None
+    for stock in get_all_stocks():
+        name = (stock.name or "").strip()
+        if len(name) < 2:
+            continue
+        index = text.find(name)
+        if index < 0:
+            continue
+        # 位置优先，其次名字更长（避免"中国平安"被"平安"抢走）
+        key = (index, -len(name))
+        if best is None or key < (best[0], -len(best[2])):
+            best = (index, stock.code, name)
+    return None if best is None else (best[1], best[2])
 
 
 # ---------------------------------------------------------------------------

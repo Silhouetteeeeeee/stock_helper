@@ -1889,9 +1889,31 @@ def main() -> None:
     test_segments_kind_fallback_not_relabeled()
     test_malformed_arguments_are_observations()
     test_tool_error_is_observation()
+    test_find_company_in_text()
     print("PASS")
     sys.stdout.flush()
     os._exit(0)
+
+
+def test_find_company_in_text() -> None:
+    """用户在哪句话里提到公司，页面就该聊哪家。"""
+    find = tools.find_company_in_text
+
+    assert find("紫金矿业靠什么赚钱？") == ("601899", "紫金矿业")
+    assert find("605499 的毛利率为什么下滑") == ("605499", "东鹏饮料")
+    assert find("SH605499 怎么样") == ("605499", "东鹏饮料")
+
+    # 没提公司：不能瞎猜
+    assert find("毛利率为什么下滑？") is None
+    assert find("") is None
+    assert find(None) is None
+
+    # 同时提到两家时，按出现先后取第一家
+    assert find("紫金矿业和东鹏饮料哪家更值得买") == ("601899", "紫金矿业")
+    assert find("东鹏饮料和紫金矿业比一下") == ("605499", "东鹏饮料")
+
+    # 不存在的代码不当成公司
+    assert find("000000 是什么") is None
 
 
 if __name__ == "__main__":

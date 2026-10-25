@@ -193,7 +193,8 @@ def test_webapp_flow() -> None:
     at = _app()
     at.run()
     assert not at.exception, list(at.exception)
-    assert [title.value for title in at.title] == ["投资助手"]
+    # 标题就写明在聊哪家公司，正文不再另起一行“当前：…”
+    assert [title.value for title in at.title] == ["投资助手 · 东鹏饮料"]
     assert at.session_state["active_code"] == "605499"
 
     # 首次运行后再注入假模型：切公司会重置会话
@@ -291,17 +292,47 @@ def test_webapp_resume_and_delete() -> None:
     assert any("已删除" in item.value for item in at.info)
 
 
-def test_webapp_index_selection() -> None:
+def test_webapp_mentions_company() -> None:
+    """对话提到哪家公司就聊哪家；没提就问清楚，不猜也不拦着输入。"""
     if AppTest is None:
         return
+    _clear_store()
     write_selection("sh000001", "上证指数", is_index=True)
+
+    from assistant import agent as agent_module
 
     at = _app()
     at.run()
     assert not at.exception, list(at.exception)
+    # 行情窗口停在指数上：没有对话就先不聊公司，标题也不带公司
     assert at.session_state["active_code"] is None
-    assert any("先在行情窗口选中" in item.value for item in at.info)
-    assert any("指数" in item.value for item in at.caption)
+    assert [title.value for title in at.title] == ["投资助手"]
+    assert any("带上公司名或代码" in item.value for item in at.info)
+    assert not any(item.value.startswith("当前：") for item in at.caption)
+
+    # 没提公司就提问：提示补上公司，不调用模型
+    at.chat_input[0].set_value("毛利率为什么下滑？").run()
+    assert not at.exception, list(at.exception)
+    assert at.session_state["active_code"] is None
+    assert any("没认出你问的是哪家公司" in item.value for item in at.warning)
+
+    def _offline_client():
+        raise RuntimeError("测试环境不调用模型")
+
+    original = agent_module.build_client
+    agent_module.build_client = _offline_client
+    try:
+        at.chat_input[0].set_value("东鹏饮料毛利率为什么下滑").run()
+        assert not at.exception, list(at.exception)
+        # 这一句里提到的公司就是本轮聊的公司，标题随之更新
+        assert at.session_state["active_code"] == "605499"
+        assert at.session_state["active_name"] == "东鹏饮料"
+        assert [title.value for title in at.title] == ["投资助手 · 东鹏饮料"]
+        assert any("助手不可用" in item.value for item in at.error)
+        # 标题下面只有一条引导，不再有“当前：…”那行
+        assert not any(item.value.startswith("当前：") for item in at.caption)
+    finally:
+        agent_module.build_client = original
 
 
 def main() -> None:
@@ -310,7 +341,7 @@ def main() -> None:
     test_server_helpers()
     test_webapp_flow()
     test_webapp_resume_and_delete()
-    test_webapp_index_selection()
+    test_webapp_mentions_company()
     print("PASS")
     sys.stdout.flush()
     os._exit(0)

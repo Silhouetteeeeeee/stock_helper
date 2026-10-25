@@ -19,8 +19,9 @@ from assistant.env import load_env
 from assistant.render import citation_html, source_lines, stream_text
 from assistant.selection import read_selection
 from assistant.store import ConversationStore, build_title
+from assistant.tools import find_company_in_text
 
-WELCOME = "选一只股票后提问，例如「它靠什么赚钱」「毛利率为什么下滑」。回答会标注数据来源。"
+WELCOME = "直接提问，提到哪家公司就聊哪家，例如「紫金矿业靠什么赚钱」「东鹏饮料毛利率为什么下滑」。回答会标注数据来源。"
 MAX_ISSUES = 2
 RECENT_LIMIT = 10
 STREAM_INTERVAL = 0.08
@@ -88,7 +89,6 @@ def _init_state() -> None:
         ("agent_code", None),
         ("active_code", None),
         ("active_name", ""),
-        ("window_code", None),
         ("conversation_id", None),
         ("notice", ""),
     ):
@@ -244,25 +244,22 @@ selection = read_selection() or {}
 state_stock = "" if selection.get("is_index") else (selection.get("code") or "")
 state_name = (selection.get("name") or "").strip() or state_stock
 
+# 输入框固定在页面底部，位置不受调用顺序影响：先读出来，
+# 这一句提到哪家公司，标题和本轮对话就跟到哪家。
+prompt = st.chat_input("问一句，如：紫金矿业靠什么赚钱？")
+mentioned = find_company_in_text(prompt) if prompt else None
+if mentioned:
+    _switch_company(*mentioned)
+
+# 行情窗口只用来给一个起点：还没有对话时，默认聊窗口里那只。
+# 一旦聊起来就只听对话的，窗口换股也不打断。
+if state_stock and not st.session_state.get("active_code"):
+    _switch_company(state_stock, state_name)
+
+active_code = st.session_state.get("active_code")
+active_name = st.session_state.get("active_name") or active_code
+
 with st.sidebar:
-    st.markdown("### 当前标的")
-    override = st.text_input(
-        "股票代码",
-        placeholder="例如 600519（留空跟随行情窗口）",
-        max_chars=6,
-        key="code_override",
-    ).strip()
-    if override and not (len(override) == 6 and override.isdigit()):
-        st.warning("股票代码应为 6 位数字，本次忽略该输入。")
-        override = ""
-
-    if state_stock:
-        st.caption(f"行情窗口：{state_name}（{state_stock}）")
-    elif selection.get("is_index"):
-        st.caption(f"行情窗口选中的是指数（{selection.get('name') or '--'}），没有财报数据")
-    else:
-        st.caption("行情窗口还没有选中股票")
-
     if st.button("新对话", use_container_width=True):
         _reset_conversation()
         st.session_state.notice = "已开始新对话，之前的记录在下方列表中。"
@@ -277,18 +274,6 @@ with st.sidebar:
 
     st.caption("回答里的 [n] 对应下方来源。数据来自本地已入库的财报、公告、调研与行情。")
 
-# 只有行情窗口真的换了标的才切换公司；打开历史对话不会被下一次 rerun 冲掉
-window_code = override or state_stock
-window_name = override or state_name
-if window_code != st.session_state.get("window_code"):
-    st.session_state.window_code = window_code
-    if window_code:
-        _switch_company(window_code, window_name)
-
-active_code = st.session_state.get("active_code")
-active_name = st.session_state.get("active_name") or active_code
-
-with st.sidebar:
     st.divider()
     st.markdown("### 最近对话")
     query = st.text_input(
@@ -304,11 +289,7 @@ with st.sidebar:
         ):
             _open_conversation(item)
 
-st.title("投资助手")
-if active_code:
-    st.caption(f"当前：{active_name}（{active_code}）")
-if selection.get("is_index") and not override and active_code:
-    st.warning("行情窗口当前选中的是指数，页面仍停留在上一只股票；选中股票或在上方输入代码即可切换。")
+st.title(f"投资助手 · {active_name}" if active_name else "投资助手")
 if st.session_state.get("notice"):
     st.info(st.session_state.notice)
     st.session_state.notice = ""
@@ -319,9 +300,11 @@ if not st.session_state.messages:
 _render_history()
 
 if not active_code:
-    st.info("先在行情窗口选中一只股票，或在左侧输入股票代码。")
+    st.info("在问题里带上公司名或代码即可，例如「紫金矿业靠什么赚钱」。")
 
-prompt = st.chat_input("问一句，如：毛利率为什么下滑？", disabled=not active_code)
+if prompt and not active_code:
+    st.warning("没认出你问的是哪家公司，请在问题里带上公司名或六位代码。")
+
 if prompt and active_code:
     conversation_id = _ensure_conversation(
         active_code, active_name or active_code, prompt
