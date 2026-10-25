@@ -146,7 +146,8 @@ def test_schemas() -> None:
     assert names == [
         "load_skill", "resolve_company", "get_company_profile", "get_finance",
         "get_financial_history", "get_segments", "get_management",
-        "get_shareholders", "get_peers", "get_dividends", "get_announcements",
+        "get_shareholders", "get_peers", "get_dividends", "get_insider_trades",
+        "get_announcements",
         "get_valuation", "calc_valuation",
     ], names
     for item in tools.schemas():
@@ -794,6 +795,108 @@ def test_dividends_tool() -> None:
     assert result.data["notes"] == ["分红总额按税前每 10 股派息估算"], result.data
 
 
+def test_insider_trades_tool() -> None:
+    latest = {
+        "change_date": "2026-05-29", "year": 2026, "person": "林木勤",
+        "executive": "林木勤", "position": "董事长,董事,总裁",
+        "relation": "本人", "kind": "individual", "direction": "增持",
+        "shares": 49_800, "average_price": 129.7958,
+        "amount": 6_463_830.84, "amount_estimated": False,
+        "reason": "二级市场买卖", "change_ratio_pct": 0.0068,
+        "hold_after": 336_304_724, "begin_hold": None, "end_hold": None,
+        "hold_type": "A股",
+    }
+    annual = {
+        "year": 2025, "events": 2, "buy_events": 1, "sell_events": 1,
+        "buy_shares": 1_000, "sell_shares": 99_000, "net_shares": -98_000,
+        "buy_amount": 10_000, "sell_amount": 19_192_239,
+        "net_amount": -19_182_239, "missing_amount_events": 0,
+        "amount_complete": True,
+    }
+    person = {
+        "person": "2026年度核心人员持股计划", "executive": None,
+        "position": None, "relation": "其他组织", "kind": "plan",
+        "events": 1, "buy_shares": 1_000_000, "sell_shares": 0,
+        "net_shares": 1_000_000, "buy_amount": 50_000_000,
+        "sell_amount": 0, "net_amount": 50_000_000,
+        "missing_amount_events": 0, "amount_complete": True,
+        "first_date": "2026-05-26", "latest_date": "2026-05-26",
+        "latest_hold": 1_000_000, "latest_price": 50.0,
+    }
+    counts = {
+        "events": 7, "buy_events": 4, "sell_events": 3, "people": 7,
+        "insiders": 6, "plans": 1, "plan_events": 1,
+        "buy_shares": 1_052_800, "sell_shares": 112_800,
+        "net_shares": 940_000, "buy_amount": 56_513_830.84,
+        "sell_amount": 21_712_408.5, "net_amount": 34_801_422.34,
+        "missing_amount_events": 0, "estimated_amount_events": 1,
+        "latest_date": "2026-05-29",
+    }
+    data = {
+        "available": True, "code": "605499", "name": "东鹏饮料",
+        "as_of": "2026-05-29", "fetched_at": "2026-10-25 10:00:00",
+        "stale": False, "window_start": "2024-01-01",
+        "window_end": "2026-10-25", "years": 3, "has_trades": True,
+        "latest": latest, "annual": [annual], "people": [person],
+        "events": [latest], "events_truncated": 0, "counts": counts,
+        "notes": ["持股计划/其他组织单列，金额不代表个人增持"],
+    }
+    captured = {}
+
+    def fake_build(code: str, **kwargs) -> dict:
+        captured.update(kwargs)
+        return data
+
+    original = tools.build_insider_trades
+    tools.build_insider_trades = fake_build  # type: ignore[assignment]
+    try:
+        result = tools.run_tool(
+            "get_insider_trades", {"years": 99}, default_company="605499"
+        )
+    finally:
+        tools.build_insider_trades = original  # type: ignore[assignment]
+
+    assert captured["years"] == 10, captured
+    assert result.ok is True, result
+    assert result.as_of == "2026-05-29", result
+    assert result.sources[0].id == "insider:605499:2026-05-29", result.sources
+    assert result.sources[0].label == "高管增减持", result.sources
+    assert result.sources[0].url == (
+        "https://data.eastmoney.com/executive/605499.html"
+    ), result.sources
+    assert result.sources[0].detail == "东鹏饮料 高管增减持 2026-05-29", result.sources
+
+    event = result.data["latest"]
+    assert event["shares"] == 49_800, event
+    assert event["average_price"] == 129.8, event
+    assert event["amount_wan"] == 646.38, event
+    assert event["change_ratio_pct"] == 0.0068, event
+    assert event["hold_after"] == 336_304_724, event
+    assert event["relation"] == "本人", event
+
+    year = result.data["annual"][0]
+    assert year["buy_amount_wan"] == 1.0, year
+    assert year["sell_amount_wan"] == 1919.22, year
+    assert year["net_amount_wan"] == -1918.22, year
+    assert year["amount_complete"] is True, year
+
+    plan = result.data["people"][0]
+    assert plan["kind"] == "plan", plan
+    assert plan["net_amount_wan"] == 5000.0, plan
+    assert plan["latest_price"] == 50.0, plan
+
+    counts = result.data["counts"]
+    assert counts["net_shares"] == 940_000, counts
+    assert counts["buy_amount_wan"] == 5651.38, counts
+    assert counts["sell_amount_wan"] == 2171.24, counts
+    assert counts["net_amount_wan"] == 3480.14, counts
+    assert counts["estimated_amount_events"] == 1, counts
+    assert result.data["window_start"] == "2024-01-01", result.data
+    assert result.data["window_end"] == "2026-10-25", result.data
+    assert result.data["has_trades"] is True, result.data
+    assert result.data["notes"] == ["持股计划/其他组织单列，金额不代表个人增持"], result.data
+
+
 def test_segments_region_missing() -> None:
     global REGION
     REGION = False
@@ -1138,6 +1241,7 @@ def main() -> None:
     test_shareholders_tool()
     test_peers_tool()
     test_dividends_tool()
+    test_insider_trades_tool()
     test_segments_region_missing()
     test_announcements_sources()
     test_valuation()

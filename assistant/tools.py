@@ -25,6 +25,8 @@ from stock.finance_snapshot import (
     INCOME_DETAIL_FIELDS,
     build_snapshot,
 )
+from stock.insider_trades import PAGE_URL as INSIDER_URL
+from stock.insider_trades import build_insider_trades
 from stock.management import PAGE_URL as MANAGEMENT_URL
 from stock.management import build_management
 from stock.peers import build_peers
@@ -255,6 +257,28 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "get_insider_trades",
+            "description": (
+                "高管增减持：列变动人、与高管的关系、职务、变动股数、"
+                "成交均价、金额、变动后持股与原因；按年汇总净增持/净减持，"
+                "按人汇总净额。持股计划单列，只含已披露记录"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "years": {
+                        "type": "integer",
+                        "description": "回看年数，1-10，默认 3",
+                    },
+                    "company": _COMPANY,
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_announcements",
             "description": "近期公告：带标签的事件（回购、减持、重大合同等）",
             "parameters": {
@@ -446,6 +470,8 @@ def run_tool(
             return _peers(code, arguments)
         if name == "get_dividends":
             return _dividends(code, arguments)
+        if name == "get_insider_trades":
+            return _insider_trades(code, arguments)
         if name == "get_announcements":
             return _announcements(code, arguments)
         if name == "get_valuation":
@@ -988,6 +1014,54 @@ def _dividends(code: str, arguments: dict) -> ToolResult:
     )
 
 
+def _insider_trades(code: str, arguments: dict) -> ToolResult:
+    try:
+        years = int(arguments.get("years", 3))
+    except (TypeError, ValueError):
+        years = 3
+    years = min(max(years, 1), 10)
+
+    data = build_insider_trades(code, years=years)
+    events = [_insider_event(item) for item in data.get("events") or []]
+    annual = [_insider_year(item) for item in data.get("annual") or []]
+    people = [_insider_person(item) for item in data.get("people") or []]
+    latest = _insider_event(data["latest"]) if data.get("latest") else None
+
+    name = data.get("name")
+    as_of = data.get("as_of") or ""
+    source = Source(
+        id=f"insider:{code}:{as_of}" if as_of else f"insider:{code}",
+        label="高管增减持",
+        detail=f"{name or code} 高管增减持 {as_of}".strip(),
+        as_of=as_of,
+        fetched_at=data.get("fetched_at") or "",
+        url=INSIDER_URL.format(code=code),
+    )
+    return ToolResult(
+        ok=True,
+        company=code,
+        as_of=as_of or None,
+        sources=(source,),
+        data={
+            "code": code,
+            "name": name,
+            "as_of": as_of or None,
+            "window_start": data.get("window_start"),
+            "window_end": data.get("window_end"),
+            "years": data.get("years", years),
+            "has_trades": data.get("has_trades", False),
+            "latest": latest,
+            "annual": annual,
+            "people": people,
+            "events": events,
+            "events_truncated": data.get("events_truncated", 0),
+            "counts": _insider_counts(data.get("counts") or {}),
+            "notes": data.get("notes") or [],
+            "stale": data.get("stale", False),
+        },
+    )
+
+
 def _announcements(code: str, arguments: dict) -> ToolResult:
     try:
         days = int(arguments.get("days") or 180)
@@ -1519,6 +1593,98 @@ def _dividend_year(item: dict) -> dict:
         "payout_ratio": _pct(item.get("payout_ratio")),
         "payout_basis": item.get("payout_basis"),
         "share_bonus_count": item.get("share_bonus_count"),
+    }
+
+
+def _insider_event(item: dict) -> dict:
+    """增减持明细一行：股数保持原单位，金额换万元，比例保留四位。"""
+    item = item or {}
+    return {
+        "change_date": item.get("change_date"),
+        "year": item.get("year"),
+        "person": item.get("person"),
+        "executive": item.get("executive"),
+        "position": item.get("position"),
+        "relation": item.get("relation"),
+        "kind": item.get("kind"),
+        "direction": item.get("direction"),
+        "shares": item.get("shares"),
+        "average_price": _round(item.get("average_price"), 2),
+        "amount_wan": _wan(item.get("amount")),
+        "amount_estimated": item.get("amount_estimated", False),
+        "reason": item.get("reason"),
+        "change_ratio_pct": _round(item.get("change_ratio_pct"), 4),
+        "hold_after": item.get("hold_after"),
+        "begin_hold": item.get("begin_hold"),
+        "end_hold": item.get("end_hold"),
+        "hold_type": item.get("hold_type"),
+    }
+
+
+def _insider_year(item: dict) -> dict:
+    """年度增减持汇总：股数保持原单位，金额换万元。"""
+    item = item or {}
+    return {
+        "year": item.get("year"),
+        "events": item.get("events"),
+        "buy_events": item.get("buy_events"),
+        "sell_events": item.get("sell_events"),
+        "buy_shares": item.get("buy_shares"),
+        "sell_shares": item.get("sell_shares"),
+        "net_shares": item.get("net_shares"),
+        "buy_amount_wan": _wan(item.get("buy_amount")),
+        "sell_amount_wan": _wan(item.get("sell_amount")),
+        "net_amount_wan": _wan(item.get("net_amount")),
+        "missing_amount_events": item.get("missing_amount_events"),
+        "amount_complete": item.get("amount_complete", True),
+    }
+
+
+def _insider_person(item: dict) -> dict:
+    """个人增减持汇总：保留关系与最新持股，金额换万元。"""
+    item = item or {}
+    return {
+        "person": item.get("person"),
+        "executive": item.get("executive"),
+        "position": item.get("position"),
+        "relation": item.get("relation"),
+        "kind": item.get("kind"),
+        "events": item.get("events"),
+        "buy_shares": item.get("buy_shares"),
+        "sell_shares": item.get("sell_shares"),
+        "net_shares": item.get("net_shares"),
+        "buy_amount_wan": _wan(item.get("buy_amount")),
+        "sell_amount_wan": _wan(item.get("sell_amount")),
+        "net_amount_wan": _wan(item.get("net_amount")),
+        "missing_amount_events": item.get("missing_amount_events"),
+        "amount_complete": item.get("amount_complete", True),
+        "first_date": item.get("first_date"),
+        "latest_date": item.get("latest_date"),
+        "latest_hold": item.get("latest_hold"),
+        "latest_price": _round(item.get("latest_price"), 2),
+    }
+
+
+def _insider_counts(item: dict) -> dict:
+    """增减持总览：股数保持原单位，金额换万元。"""
+    item = item or {}
+    return {
+        "events": item.get("events", 0),
+        "buy_events": item.get("buy_events", 0),
+        "sell_events": item.get("sell_events", 0),
+        "people": item.get("people", 0),
+        "insiders": item.get("insiders", 0),
+        "plans": item.get("plans", 0),
+        "plan_events": item.get("plan_events", 0),
+        "buy_shares": item.get("buy_shares", 0),
+        "sell_shares": item.get("sell_shares", 0),
+        "net_shares": item.get("net_shares", 0),
+        "buy_amount_wan": _wan(item.get("buy_amount")),
+        "sell_amount_wan": _wan(item.get("sell_amount")),
+        "net_amount_wan": _wan(item.get("net_amount")),
+        "missing_amount_events": item.get("missing_amount_events", 0),
+        "estimated_amount_events": item.get("estimated_amount_events", 0),
+        "latest_date": item.get("latest_date"),
     }
 
 
