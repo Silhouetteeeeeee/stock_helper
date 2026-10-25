@@ -146,7 +146,7 @@ def test_schemas() -> None:
     assert names == [
         "load_skill", "resolve_company", "get_company_profile", "get_finance",
         "get_financial_history", "get_segments", "get_management",
-        "get_shareholders", "get_announcements",
+        "get_shareholders", "get_peers", "get_announcements",
         "get_valuation", "calc_valuation",
     ], names
     for item in tools.schemas():
@@ -615,6 +615,111 @@ def test_shareholders_tool() -> None:
     assert result.data["counts"]["holder_periods"] == 1, result.data
 
 
+def test_peers_tool() -> None:
+    subject = {
+        "code": "605499", "name": "东鹏饮料", "market": "上交所主板",
+        "revenue": 12443036555.29, "net_profit": 2866801858.34,
+        "revenue_yoy": 15.8933, "profit_yoy": 20.72,
+        "gross_margin": 48.3649, "net_margin": 23.038,
+        "roe": 19.03, "eps": 5.5, "bps": 30.0, "ocf_per_share": 6.0,
+        "pe_ttm": 25.0, "pb_mrq": 8.0, "market_cap": 100_000_000_000.0,
+        "revenue_ratio": 1.0, "market_cap_ratio": 1.0,
+    }
+    peer = {
+        "code": "600597", "name": "光明乳业", "market": "上交所主板",
+        "revenue": 11870000000.0, "net_profit": 120000000.0,
+        "revenue_yoy": -4.8076, "profit_yoy": -30.0,
+        "gross_margin": 17.5729, "net_margin": 1.011,
+        "roe": 2.64, "eps": 0.1, "bps": 5.0, "ocf_per_share": 0.5,
+        "pe_ttm": -80.17, "pb_mrq": 0.9577,
+        "market_cap": 9_300_000_000.0,
+        "revenue_ratio": 0.954, "market_cap_ratio": 0.093,
+    }
+    leader = {
+        **peer, "code": "600887", "name": "伊利股份",
+        "revenue": 64489715236.16, "revenue_ratio": 5.18,
+        "pe_ttm": 18.0, "pb_mrq": 4.0,
+        "market_cap": 600_000_000_000.0, "market_cap_ratio": 6.0,
+    }
+    data = {
+        "available": True, "code": "605499", "name": "东鹏饮料",
+        "as_of": "2026-06-30", "fetched_at": "2026-10-25 10:00:00",
+        "stale": False,
+        "industry": {"name": "食品饮料", "code": "BK1282", "count": 10},
+        "report": {
+            "period": "2026-06-30", "qdate": "2026年二季度",
+            "datatype": "2026年半年报",
+        },
+        "valuation_date": "2026-10-23", "valuation_stale": False,
+        "valuation_error": None,
+        "counts": {
+            "industry": 10, "valuation": 9, "selected": 1, "leaders": 1,
+        },
+        "subject": subject,
+        "stats": {
+            "revenue": {
+                "value": 12443036555.29, "median": 3485000000.0,
+                "rank": 2, "percentile": 90.0, "count": 10,
+            },
+            "pe_ttm": {
+                "value": 25.0, "median": 22.5,
+                "rank": 3, "percentile": 75.0, "count": 8,
+            },
+        },
+        "peers": [peer], "leaders": [leader],
+        "notes": ["估值日期与财报期不同"],
+        "url": "https://data.eastmoney.com/bbsj/202606/yjbb.html",
+    }
+
+    captured = {}
+
+    def fake_build(code: str, **kwargs) -> dict:
+        captured.update(kwargs)
+        return data
+
+    original = tools.build_peers
+    tools.build_peers = fake_build  # type: ignore[assignment]
+    try:
+        result = tools.run_tool(
+            "get_peers", {"limit": 99}, default_company="605499"
+        )
+    finally:
+        tools.build_peers = original  # type: ignore[assignment]
+
+    assert captured["limit"] == 20, captured
+    assert result.ok is True, result
+    assert result.as_of == "2026-06-30", result
+    assert result.sources[0].id == "peers:605499:2026-06-30", result.sources
+    assert result.sources[0].label == "同业对比", result.sources
+    assert result.sources[0].url == (
+        "https://data.eastmoney.com/bbsj/202606/yjbb.html"
+    ), result.sources
+    assert "食品饮料 10 家" in result.sources[0].detail, result.sources
+
+    subject_row = result.data["subject"]
+    assert subject_row["revenue_yi"] == 124.43, subject_row
+    assert subject_row["net_margin"] == 23.0, subject_row
+    assert subject_row["gross_margin"] == 48.4, subject_row
+    assert subject_row["pe_ttm"] == 25.0, subject_row
+
+    revenue = result.data["stats"]["revenue"]
+    assert revenue["value"] == 124.43 and revenue["median"] == 34.85, revenue
+    assert revenue["rank"] == 2 and revenue["percentile"] == 90.0, revenue
+    pe_stat = result.data["stats"]["pe_ttm"]
+    assert pe_stat["median"] == 22.5 and pe_stat["count"] == 8, pe_stat
+
+    row = result.data["peers"][0]
+    assert row["name"] == "光明乳业", row
+    assert row["revenue_yi"] == 118.7, row
+    assert row["pe_ttm"] == -80.17 and row["pb_mrq"] == 0.96, row
+    assert row["revenue_ratio"] == 0.95, row
+    assert result.data["leaders"][0]["name"] == "伊利股份", result.data
+    assert result.data["valuation_date"] == "2026-10-23", result.data
+    assert result.data["counts"]["industry"] == 10, result.data
+    assert result.data["report"]["qdate"] == "2026年二季度", result.data
+    assert result.data["notes"] == ["估值日期与财报期不同"], result.data
+
+
 def test_segments_region_missing() -> None:
     global REGION
     REGION = False
@@ -957,6 +1062,7 @@ def main() -> None:
     test_segments_two_slices()
     test_management_tool()
     test_shareholders_tool()
+    test_peers_tool()
     test_segments_region_missing()
     test_announcements_sources()
     test_valuation()

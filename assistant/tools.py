@@ -25,6 +25,7 @@ from stock.finance_snapshot import (
 )
 from stock.management import PAGE_URL as MANAGEMENT_URL
 from stock.management import build_management
+from stock.peers import build_peers
 from stock.segments import ensure_segments, segments_from_rows
 from stock.shareholders import PAGE_URL as SHAREHOLDER_URL
 from stock.shareholders import build_shareholders
@@ -197,6 +198,28 @@ TOOL_SCHEMAS: list[dict] = [
                     "periods": {
                         "type": "integer",
                         "description": "股东户数回看期数，1-10，默认 8",
+                    },
+                    "company": _COMPANY,
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_peers",
+            "description": (
+                "同业对比：同行业、同报告期的营收/净利/增速/毛利率/净利率/ROE/PE/PB，"
+                "含行业中位数、本公司排名与分位、规模相近公司与营收龙头；"
+                "样本不足时回退上一报告期。rank=1 表示数值最高（PE/PB 即估值最贵）"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "规模相近的同业数量，3-20，默认 8",
                     },
                     "company": _COMPANY,
                 },
@@ -394,6 +417,8 @@ def run_tool(
             return _management(code, arguments)
         if name == "get_shareholders":
             return _shareholders(code, arguments)
+        if name == "get_peers":
+            return _peers(code, arguments)
         if name == "get_announcements":
             return _announcements(code, arguments)
         if name == "get_valuation":
@@ -834,6 +859,62 @@ def _shareholders(code: str, arguments: dict) -> ToolResult:
                 "free_float_top10": len(free_top10),
                 "holder_periods": len(history),
             },
+        },
+    )
+
+
+def _peers(code: str, arguments: dict) -> ToolResult:
+    try:
+        limit = int(arguments.get("limit", 8))
+    except (TypeError, ValueError):
+        limit = 8
+    limit = min(max(limit, 3), 20)
+
+    data = build_peers(code, limit=limit)
+    peers = [_peer_row(item) for item in data.get("peers") or []]
+    leaders = [_peer_row(item) for item in data.get("leaders") or []]
+    if not data.get("available") or (not peers and not leaders):
+        return ToolResult(ok=False, company=code, error=f"{code}：没有同业对比数据")
+
+    industry = data.get("industry") or {}
+    report = data.get("report") or {}
+    as_of = data.get("as_of") or ""
+    name = data.get("name")
+    source = Source(
+        id=f"peers:{code}:{as_of}" if as_of else f"peers:{code}",
+        label="同业对比",
+        detail=(
+            f"{name or code} {as_of} · "
+            f"{industry.get('name') or '同行业'} {industry.get('count') or 0} 家"
+        ).strip(),
+        as_of=as_of,
+        fetched_at=data.get("fetched_at") or "",
+        url=data.get("url") or "",
+    )
+    return ToolResult(
+        ok=True,
+        company=code,
+        as_of=as_of,
+        sources=(source,),
+        data={
+            "code": code,
+            "name": name,
+            "as_of": as_of,
+            "industry": industry,
+            "report": report,
+            "valuation_date": data.get("valuation_date"),
+            "valuation_stale": data.get("valuation_stale", False),
+            "valuation_error": data.get("valuation_error"),
+            "counts": data.get("counts") or {},
+            "subject": _peer_row(data.get("subject") or {}),
+            "stats": {
+                metric: _peer_stat(metric, stat)
+                for metric, stat in (data.get("stats") or {}).items()
+            },
+            "peers": peers,
+            "leaders": leaders,
+            "notes": data.get("notes") or [],
+            "stale": data.get("stale", False),
         },
     )
 
@@ -1328,6 +1409,59 @@ def _holder_count_row(item: dict) -> dict:
         "top10_ratio": _pct(item.get("top10_ratio")),
         "free_float_top10_ratio": _pct(item.get("free_float_top10_ratio")),
     }
+
+
+_PEER_AMOUNT_METRICS = {"revenue", "net_profit", "market_cap"}
+_PEER_RATIO_METRICS = {
+    "revenue_yoy", "profit_yoy", "gross_margin", "net_margin", "roe",
+}
+
+
+def _peer_row(item: dict) -> dict:
+    """同业一行：金额换亿元，比例保留一位，倍数保留两位。"""
+    item = item or {}
+    return {
+        "code": item.get("code"),
+        "name": item.get("name"),
+        "market": item.get("market"),
+        "revenue_yi": _yi(item.get("revenue")),
+        "net_profit_yi": _yi(item.get("net_profit")),
+        "revenue_yoy": _pct(item.get("revenue_yoy")),
+        "profit_yoy": _pct(item.get("profit_yoy")),
+        "gross_margin": _pct(item.get("gross_margin")),
+        "net_margin": _pct(item.get("net_margin")),
+        "roe": _pct(item.get("roe")),
+        "eps": _round(item.get("eps"), 2),
+        "bps": _round(item.get("bps"), 2),
+        "ocf_per_share": _round(item.get("ocf_per_share"), 2),
+        "pe_ttm": _round(item.get("pe_ttm"), 2),
+        "pb_mrq": _round(item.get("pb_mrq"), 2),
+        "market_cap_yi": _yi(item.get("market_cap")),
+        "revenue_ratio": _round(item.get("revenue_ratio"), 2),
+        "market_cap_ratio": _round(item.get("market_cap_ratio"), 2),
+    }
+
+
+def _peer_stat(metric: str, stat: dict) -> dict:
+    """统计值按指标口径换算；rank=1 表示数值最高。"""
+    stat = stat or {}
+    return {
+        "value": _peer_metric(metric, stat.get("value")),
+        "median": _peer_metric(metric, stat.get("median")),
+        "rank": stat.get("rank"),
+        "percentile": _pct(stat.get("percentile")),
+        "count": stat.get("count"),
+    }
+
+
+def _peer_metric(metric: str, value):
+    if value is None:
+        return None
+    if metric in _PEER_AMOUNT_METRICS:
+        return _yi(value)
+    if metric in _PEER_RATIO_METRICS:
+        return _pct(value)
+    return _round(value, 2)
 
 
 def _company_text(value) -> tuple[str, str | None]:
