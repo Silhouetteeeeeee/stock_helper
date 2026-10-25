@@ -124,8 +124,21 @@ class ResearchAgent:
         本轮失败时回滚这一轮的消息：交互模式放弃当前问题后，历史里不能
         留下一条没有回答的 user 消息，否则模型会把两个问题混在一起。
         """
+        return self._converse(question, self._complete_blocking, None)
+
+    def ask_stream(self, question: str, emit) -> Answer:
+        """同 ``ask``，但把回答片段实时交给 ``emit``。
+
+        事件：``{"type": "text", "delta"}`` 是回答正文；工具轮次结束会发
+        ``{"type": "discard"}``，页面据此清掉这一轮先推的草稿；
+        ``{"type": "tool", ...}`` 是每次取数完成的进度。
+        """
+        return self._converse(question, self._complete_streaming, emit)
+
+    def _converse(self, question, complete, emit) -> Answer:
         start = len(self._history)
         self._history.append({"role": "user", "content": question})
+        notify = emit or (lambda event: None)
         trace: list[dict] = []
         issues: list[dict] = []
         text = ""
@@ -134,34 +147,23 @@ class ResearchAgent:
         try:
             while rounds < self.max_rounds:
                 messages = [self._system_message()] + self._history
-                response = self._create(messages)
+                reply = complete(messages, notify)
                 rounds += 1
-                message = response.choices[0].message
-                content = getattr(message, "content", None) or ""
-                tool_calls = list(getattr(message, "tool_calls", None) or [])
+                content = reply.get("content") or ""
+                tool_calls = list(reply.get("tool_calls") or [])
+                entry: dict = {"role": "assistant", "content": content}
                 if not tool_calls:
                     text = content
-                    self._history.append({"role": "assistant", "content": text})
+                    self._history.append(entry)
                     break
 
-                self._history.append({
-                    "role": "assistant",
-                    "content": content,
-                    "tool_calls": [
-                        {
-                            "id": call.id,
-                            "type": "function",
-                            "function": {
-                                "name": call.function.name,
-                                "arguments": call.function.arguments,
-                            },
-                        }
-                        for call in tool_calls
-                    ],
-                })
+                # 这一轮其实是取数：已经推给页面的草稿需要清掉
+                notify({"type": "discard"})
+                entry["tool_calls"] = tool_calls
+                self._history.append(entry)
                 for call in tool_calls:
-                    name = call.function.name
-                    arguments = _parse_arguments(call.function.arguments)
+                    name = call["function"].get("name") or "未知工具"
+                    arguments = _parse_arguments(call["function"].get("arguments"))
                     try:
                         result = run_tool(name, arguments, self.default_company)
                     except Exception as error:  # noqa: BLE001 - 每个 id 都必须有回执
@@ -172,10 +174,10 @@ class ResearchAgent:
                         self._registry[source.id] = source
                     self._history.append({
                         "role": "tool",
-                        "tool_call_id": call.id,
+                        "tool_call_id": call.get("id", ""),
                         "content": result.to_message(),
                     })
-                    trace.append({
+                    step = {
                         "round": rounds,
                         "name": name,
                         "arguments": arguments,
@@ -184,7 +186,9 @@ class ResearchAgent:
                         "as_of": result.as_of,
                         "error": result.error,
                         "sources": [source.id for source in result.sources],
-                    })
+                    }
+                    trace.append(step)
+                    notify({"type": "tool", **step})
             else:
                 issues.append({
                     "type": "rounds_exhausted",
@@ -204,6 +208,59 @@ class ResearchAgent:
             rounds=rounds,
         )
 
+    def _complete_blocking(self, messages, emit) -> dict:
+        response = self._create(messages)
+        message = response.choices[0].message
+        return {
+            "content": getattr(message, "content", None) or "",
+            "tool_calls": [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.function.name,
+                        "arguments": call.function.arguments,
+                    },
+                }
+                for call in list(getattr(message, "tool_calls", None) or [])
+            ],
+        }
+
+    def _complete_streaming(self, messages, emit) -> dict:
+        """把流式 chunk 拼回一条普通 assistant 消息，工具参数分片也要接上。"""
+        stream = self._create(messages, stream=True)
+        parts: list[str] = []
+        calls: dict[int, dict] = {}
+        for chunk in stream:
+            for choice in getattr(chunk, "choices", None) or []:
+                delta = getattr(choice, "delta", None)
+                if delta is None:
+                    continue
+                content = getattr(delta, "content", None)
+                if content:
+                    parts.append(content)
+                    emit({"type": "text", "delta": content})
+                for call in getattr(delta, "tool_calls", None) or []:
+                    index = getattr(call, "index", 0) or 0
+                    slot = calls.setdefault(index, {
+                        "id": "",
+                        "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    })
+                    if getattr(call, "id", None):
+                        slot["id"] = call.id
+                    function = getattr(call, "function", None)
+                    if function is None:
+                        continue
+                    if getattr(function, "name", None):
+                        slot["function"]["name"] = function.name
+                    if getattr(function, "arguments", None):
+                        slot["function"]["arguments"] += function.arguments
+        return {
+            "content": "".join(parts),
+            "tool_calls": [calls[index] for index in sorted(calls)],
+        }
+
     # ------------------------------------------------------------------
     # 内部
     # ------------------------------------------------------------------
@@ -214,19 +271,22 @@ class ResearchAgent:
             "content": f"{SYSTEM_PROMPT}\n\n当前默认公司：{company}",
         }
 
-    def _create(self, messages: list[dict]):
+    def _create(self, messages: list[dict], stream: bool = False):
         """调用模型；临时故障重试一次，其余错误直接放弃。"""
+        kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "tools": schemas(),
+            "tool_choice": "auto",
+            "temperature": TEMPERATURE,
+            "extra_body": {"thinking": {"type": "enabled"}},
+        }
+        if stream:
+            kwargs["stream"] = True
         last_error: Exception | None = None
         for _ in range(2):
             try:
-                return self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=schemas(),
-                    tool_choice="auto",
-                    temperature=TEMPERATURE,
-                    extra_body={"thinking": {"type": "enabled"}},
-                )
+                return self.client.chat.completions.create(**kwargs)
             except RETRYABLE as error:
                 last_error = error
             except Exception as error:  # noqa: BLE001 - 鉴权/参数错误重试也没用

@@ -10,9 +10,10 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# 页面读默认状态文件；测试指向临时目录，必须在导入 selection 前设置
+# 页面读默认状态文件与对话库；测试指向临时目录，必须在导入前设置
 _STATE_DIR = tempfile.mkdtemp(prefix="assistant_web_")
 os.environ["MARKET_ASSISTANT_STATE"] = str(Path(_STATE_DIR) / "state.json")
+os.environ["MARKET_ASSISTANT_DB"] = str(Path(_STATE_DIR) / "assistant.db")
 
 try:
     from streamlit.testing.v1 import AppTest
@@ -21,7 +22,7 @@ except ImportError:  # pragma: no cover - 没装 streamlit 时只跳过页面测
 
 from assistant import server
 from assistant.models import Source
-from assistant.render import cite_text, source_lines
+from assistant.render import citation_html, cite_text, source_lines, stream_text
 from assistant.selection import read_selection, write_selection
 from assistant.store import ConversationStore, build_title
 
@@ -81,6 +82,19 @@ def test_render_citations() -> None:
     assert len(lines) == 7
     assert "另有 2 条" in lines[-1]
 
+    # 角标用 HTML，悬停内容放在 data-tip 里
+    html = citation_html("毛利率 < 30% & 回升 [[fin:1]]，未知 [[nope]]", sources)
+    assert "&lt; 30% &amp; 回升" in html, html
+    assert (
+        '<sup class="cite" data-tip="财报 · 东财 · 2026-06-30">[1]</sup>' in html
+    ), html
+    assert '<sup class="cite" data-tip="来源未登记">[?]</sup>' in html, html
+    # 引用以外的 Markdown 语法要留着
+    assert "> 引用" in citation_html("> 引用\n\n毛利率 [[fin:1]]", sources)
+
+    # 流式过程中先隐藏内部 id，收尾时再换成角标
+    assert stream_text("毛利率[[fin:1]]下降") == "毛利率下降"
+
 
 def test_server_helpers() -> None:
     command = server.build_command(8600)
@@ -132,6 +146,19 @@ class _FakeAgent:
         self._history.append({"role": "assistant", "content": _FakeAnswer.text})
         return _FakeAnswer()
 
+    def ask_stream(self, question: str, emit):
+        self.asked.append(question)
+        self._history.append({"role": "user", "content": question})
+        # 先推一段草稿再取数：页面应清掉草稿，从正式答案重新流
+        emit({"type": "text", "delta": "我先查一下。"})
+        emit({"type": "discard"})
+        for step in _FakeAnswer.trace:
+            emit({"type": "tool", **step})
+        for piece in ("毛利率下降 ", "[[fin:1]]", "\n\n## 结论\n继续观察 [[fin:2]]"):
+            emit({"type": "text", "delta": piece})
+        self._history.append({"role": "assistant", "content": _FakeAnswer.text})
+        return _FakeAnswer()
+
     def history_size(self) -> int:
         return len(self._history)
 
@@ -180,8 +207,15 @@ def test_webapp_flow() -> None:
     assert messages[1]["trace"][0]["name"] == "get_finance"
 
     markdown = "\n".join(item.value for item in at.markdown)
-    assert "毛利率下降 [1]" in markdown, markdown
-    assert "继续观察 [2]" in markdown, markdown
+    assert (
+        '毛利率下降 <sup class="cite" data-tip="财报 · 东财 · 2026-06-30">[1]</sup>'
+        in markdown
+    ), markdown
+    assert (
+        '继续观察 <sup class="cite" data-tip="公告 · 东财 · 2026-08-20">[2]</sup>'
+        in markdown
+    ), markdown
+    assert "我先查一下" not in markdown, markdown
     assert "1. get_finance · 605499 · 2026-06-30 · 成功" in markdown, markdown
     captions = [item.value for item in at.caption]
     assert "[1] 财报 · 东财 · 2026-06-30" in captions, captions
@@ -220,7 +254,7 @@ def test_webapp_resume_and_delete() -> None:
     )
     store.append(conversation_id, "user", {"text": "渠道怎么样"})
     store.append(conversation_id, "assistant", {
-        "text": "直营占比提升 [1]",
+        "text": "直营占比提升 [[fin:9]]",
         "sources": [Source("fin:9", "财报", "东财", "2026-06-30", "").to_dict()],
         "trace": 2,
         "issues": [],
@@ -241,7 +275,10 @@ def test_webapp_resume_and_delete() -> None:
         "assistant",
     ]
     markdown = "\n".join(item.value for item in at.markdown)
-    assert "直营占比提升 [1]" in markdown, markdown
+    assert (
+        '直营占比提升 <sup class="cite" data-tip="财报 · 东财 · 2026-06-30">[1]</sup>'
+        in markdown
+    ), markdown
     # 旧数据只存了次数，不能因此报错
     assert any("研究过程：2 次取数" in item.value for item in at.caption)
 

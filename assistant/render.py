@@ -40,6 +40,61 @@ def cite_text(text: str, sources) -> str:
     return CITATION_PATTERN.sub(replace, text or "")
 
 
+def stream_text(text: str) -> str:
+    """流式过程中的正文：先藏起内部 id，收尾时再换成角标。"""
+    return CITATION_PATTERN.sub("", text or "")
+
+
+def _escape_html(text: str) -> str:
+    """转义模型正文里的标签，但保留 ``>``，别把 Markdown 引用块弄坏。"""
+    return (text or "").replace("&", "&amp;").replace("<", "&lt;")
+
+
+def source_tip(source) -> str:
+    """悬停提示：来源类型、明细与数据日期。"""
+    detail = " · ".join(
+        part
+        for part in (
+            _field(source, "label"),
+            _field(source, "detail"),
+            _field(source, "as_of"),
+        )
+        if part
+    )
+    return detail or _field(source, "id") or "未知来源"
+
+
+def citation_html(text: str, sources) -> str:
+    """把 ``[[id]]`` 换成可悬停的 ``<sup>``；正文转义后再插入 HTML。
+
+    角标编号与 ``cite_text`` 一致，悬停内容放在 ``data-tip``，由页面
+    的 CSS 负责展示。
+    """
+    indexed: dict[str, tuple[int, object]] = {}
+    for source in sources or []:
+        source_id = _field(source, "id")
+        if source_id and source_id not in indexed:
+            indexed[source_id] = (len(indexed) + 1, source)
+
+    def replace(match: re.Match) -> str:
+        ref = match.group(1).strip()
+        entry = indexed.get(ref)
+        if entry is None:
+            tip = "来源未登记"
+            index = "?"
+        else:
+            index, source = entry
+            tip = source_tip(source)
+        tip = (
+            tip.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace('"', "&quot;")
+        )
+        return f'<sup class="cite" data-tip="{tip}">[{index}]</sup>'
+
+    return CITATION_PATTERN.sub(replace, _escape_html(text))
+
+
 def source_line(source, index: int) -> str:
     """一条来源：``[1] 财报 · 东财 · 2026-06-30``。"""
     detail = " · ".join(

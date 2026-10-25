@@ -10,17 +10,20 @@
 
 from __future__ import annotations
 
+import time
+
 import streamlit as st
 
 from assistant.agent import ResearchAgent, build_client
 from assistant.env import load_env
-from assistant.render import cite_text, source_lines
+from assistant.render import citation_html, source_lines, stream_text
 from assistant.selection import read_selection
 from assistant.store import ConversationStore, build_title
 
 WELCOME = "选一只股票后提问，例如「它靠什么赚钱」「毛利率为什么下滑」。回答会标注数据来源。"
 MAX_ISSUES = 2
 RECENT_LIMIT = 10
+STREAM_INTERVAL = 0.08
 
 STORE = ConversationStore()
 
@@ -38,6 +41,37 @@ st.markdown(
     <style>
     .block-container { max-width: 860px; padding-top: 2.2rem; }
     [data-testid="stChatMessage"] { border-radius: 10px; }
+
+    sup.cite {
+        color: #7fb0ff;
+        font-weight: 700;
+        cursor: help;
+        position: relative;
+        margin-left: 1px;
+    }
+    sup.cite::after {
+        content: attr(data-tip);
+        position: absolute;
+        left: 50%;
+        bottom: 1.5em;
+        transform: translateX(-50%);
+        width: max-content;
+        max-width: 320px;
+        white-space: normal;
+        background: #262c3a;
+        color: #f2f4f8;
+        font-size: 0.75rem;
+        font-weight: 400;
+        line-height: 1.4;
+        padding: 0.4rem 0.6rem;
+        border-radius: 6px;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.12s ease;
+        z-index: 1000;
+    }
+    sup.cite:hover::after { opacity: 1; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -145,8 +179,8 @@ def _trace_line(step: dict) -> str:
 
 def _render_assistant(message: dict) -> None:
     sources = message.get("sources") or []
-    body = cite_text(message.get("text", ""), sources)
-    st.markdown(body or "_（没有返回正文）_")
+    body = citation_html(message.get("text", ""), sources)
+    st.markdown(body or "_（没有返回正文）_", unsafe_allow_html=True)
     lines = source_lines(sources)
     if lines:
         st.caption("来源：")
@@ -308,17 +342,45 @@ if prompt and active_code:
     else:
         start = agent.history_size()
         with st.chat_message("assistant"):
-            with st.spinner("研究中…会调用多个数据工具，通常需要 10–30 秒"):
-                try:
-                    answer = agent.ask(prompt)
-                except Exception as error:  # noqa: BLE001 - 失败要留在对话里
-                    text = f"研究失败：{error}"
-                    st.error(text)
-                    st.session_state.messages.append({"role": "error", "text": text})
-                    STORE.append(conversation_id, "error", {"text": text})
-                else:
-                    message = _answer_message(answer)
-                    message["raw"] = agent.history_since(start)
+            placeholder = st.empty()
+            steps = st.empty()
+            streamed = {"text": "", "last": 0.0}
+
+            def emit(event: dict) -> None:
+                kind = event.get("type")
+                if kind == "text":
+                    streamed["text"] += event.get("delta") or ""
+                    now = time.monotonic()
+                    if now - streamed["last"] >= STREAM_INTERVAL:
+                        streamed["last"] = now
+                        placeholder.markdown(
+                            stream_text(streamed["text"]) + " ▌"
+                        )
+                elif kind == "discard":
+                    # 这一轮其实是取数，先把草稿清掉
+                    streamed["text"] = ""
+                    placeholder.markdown("_正在取数…_")
+                elif kind == "tool":
+                    outcome = "成功" if event.get("ok") else "失败"
+                    steps.caption(
+                        f"已取数：{event.get('name')} · "
+                        f"{event.get('company') or '--'} · {outcome}"
+                    )
+
+            try:
+                answer = agent.ask_stream(prompt, emit)
+            except Exception as error:  # noqa: BLE001 - 失败要留在对话里
+                placeholder.empty()
+                steps.empty()
+                text = f"研究失败：{error}"
+                st.error(text)
+                st.session_state.messages.append({"role": "error", "text": text})
+                STORE.append(conversation_id, "error", {"text": text})
+            else:
+                message = _answer_message(answer)
+                message["raw"] = agent.history_since(start)
+                steps.empty()
+                with placeholder.container():
                     _render_assistant(message)
-                    st.session_state.messages.append(message)
-                    STORE.append(conversation_id, "assistant", message)
+                st.session_state.messages.append(message)
+                STORE.append(conversation_id, "assistant", message)
