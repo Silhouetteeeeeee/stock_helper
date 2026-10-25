@@ -20,10 +20,29 @@ from datetime import date, datetime
 from typing import Callable
 
 from .db_service import get_stock, normalize_stock_code
+from .finance_fields import BALANCE_FIELDS, CASHFLOW_FIELDS, INCOME_FIELDS
 from .finance_service import DEFAULT_CACHE_DAYS, FinanceError, ensure_financials
 
 DEFAULT_TREND_PERIODS = 8
 SOURCE_LABEL = "新浪财经 stock_financial_report_sina"
+
+# 三张表的完整金额科目由 finance_fields 维护；这里只排除每股收益，
+# 因为它不是"元"单位，不能像其余科目一样统一换算成亿元。
+BALANCE_DETAIL_FIELDS = tuple(BALANCE_FIELDS)
+INCOME_DETAIL_FIELDS = tuple(
+    field for field in INCOME_FIELDS if field not in ("basic_eps", "diluted_eps")
+)
+CASHFLOW_DETAIL_FIELDS = tuple(CASHFLOW_FIELDS)
+
+# 营运资金相关科目做同比，方便和营收增速对照
+WORKING_CAPITAL_YOY_FIELDS = (
+    "notes_receivable",
+    "prepayments",
+    "other_receivables",
+    "accounts_payable",
+    "contract_liabilities",
+    "development_expenditure",
+)
 
 # --- 异常判定阈值（都是"超过多少才算"，避免正常波动被当成异常） -----------
 RECEIVABLE_GAP_PP = 20.0      # 应收账款增速比营收增速快这么多百分点
@@ -345,6 +364,21 @@ def _detail(latest: dict, last_year: dict | None) -> dict:
         latest.get("construction_in_progress"),
         _value(last_year, "construction_in_progress"),
     )
+    for field in WORKING_CAPITAL_YOY_FIELDS:
+        detail[f"{field}_yoy"] = _growth(
+            latest.get(field), _value(last_year, field)
+        )
+
+    # 完整三表科目按报表分组，工具层统一换算成亿元；这里保留原始单位
+    detail["balance"] = {
+        field: latest.get(field) for field in BALANCE_DETAIL_FIELDS
+    }
+    detail["income"] = {
+        field: latest.get(field) for field in INCOME_DETAIL_FIELDS
+    }
+    detail["cashflow"] = {
+        field: latest.get(field) for field in CASHFLOW_DETAIL_FIELDS
+    }
     return detail
 
 

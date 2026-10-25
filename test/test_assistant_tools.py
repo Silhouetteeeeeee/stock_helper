@@ -74,6 +74,26 @@ def fake_snapshot(code: str, **kwargs) -> dict:
                 "treasury_stock": 0.2e9,
                 "rd_expense": 0.4e9,
                 "capex": 0.8e9,
+                "notes_receivable_yoy": 50.0,
+                "prepayments_yoy": -20.0,
+                "other_receivables_yoy": 100.0,
+                "accounts_payable_yoy": 25.0,
+                "contract_liabilities_yoy": 80.0,
+                "development_expenditure_yoy": 30.0,
+                "balance": {
+                    "notes_receivable": 0.6e9,
+                    "paid_in_capital": 1.0e9,
+                    "total_assets": 20.0e9,
+                },
+                "income": {
+                    "operating_profit": 3.5e9,
+                    "selling_expense": 2.0e9,
+                    "net_profit_attributable": 2.8e9,
+                },
+                "cashflow": {
+                    "cash_from_sales": 8.0e9,
+                    "ending_cash": 2.0e9,
+                },
             },
         },
         "trend": [
@@ -219,6 +239,17 @@ def test_finance_units_and_sources() -> None:
     assert result.data["treasury_stock_yi"] == 2.0, result.data
     assert result.data["rd_expense_yi"] == 4.0, result.data
     assert result.data["capex_yi"] == 8.0, result.data
+    # 营运资金同比与三张表完整科目
+    assert result.data["notes_receivable_yoy"] == 50.0, result.data
+    assert result.data["prepayments_yoy"] == -20.0, result.data
+    assert result.data["accounts_payable_yoy"] == 25.0, result.data
+    assert result.data["balance_detail"]["notes_receivable_yi"] == 6.0, result.data
+    assert result.data["balance_detail"]["paid_in_capital_yi"] == 10.0, result.data
+    assert result.data["balance_detail"]["accounts_receivable_yi"] is None, result.data
+    assert result.data["income_detail"]["operating_profit_yi"] == 35.0, result.data
+    assert result.data["income_detail"]["selling_expense_yi"] == 20.0, result.data
+    assert result.data["cashflow_detail"]["cash_from_sales_yi"] == 80.0, result.data
+    assert result.data["cashflow_detail"]["ending_cash_yi"] == 20.0, result.data
     source = result.sources[0]
     assert source.id == "finance:605499:2026-06-30"
     assert source.as_of == "2026-06-30"
@@ -280,6 +311,9 @@ def test_finance_without_detail() -> None:
         "credit_impairment_yi", "treasury_stock_yi", "rd_expense_yi", "capex_yi",
     ):
         assert result.data[key] is None, (key, result.data[key])
+    assert result.data["balance_detail"]["notes_receivable_yi"] is None, result.data
+    assert result.data["income_detail"]["operating_profit_yi"] is None, result.data
+    assert result.data["cashflow_detail"]["cash_from_sales_yi"] is None, result.data
 
 
 def test_profile_tool() -> None:

@@ -180,12 +180,25 @@ def test_detail_fields() -> None:
         intangible_assets=5 * E8, long_term_equity_invest=3 * E8,
         notes_payable=2 * E8, accounts_payable=12 * E8,
         advances_from_customers=1 * E8, contract_liabilities=4 * E8,
+        notes_receivable=6 * E8, prepayments=2 * E8,
+        other_receivables=1 * E8, development_expenditure=1.5 * E8,
+        selling_expense=10 * E8, admin_expense=4 * E8,
+        finance_expense=1 * E8, operating_profit=20 * E8,
+        total_profit=21 * E8, income_tax=4 * E8,
+        net_profit_attributable=16 * E8, minority_profit=1 * E8,
+        cash_from_sales=95 * E8, operating_cash_inflow=100 * E8,
+        operating_cash_outflow=80 * E8, investment_cash_flow=-10 * E8,
+        financing_cash_flow=5 * E8, ending_cash=20 * E8,
+        paid_in_capital=10 * E8, capital_reserve=30 * E8,
         investment_income=-0.5 * E8, fair_value_change=0.1 * E8,
         asset_impairment=-0.3 * E8, credit_impairment=-0.2 * E8,
         treasury_stock=2 * E8, rd_expense=4 * E8, capex=8 * E8,
     )
     last_year = row(
         "2025-06-30", fixed_assets=20 * E8, construction_in_progress=5 * E8,
+        notes_receivable=3 * E8, prepayments=2.5 * E8,
+        other_receivables=0.5 * E8, accounts_payable=8 * E8,
+        contract_liabilities=2 * E8, development_expenditure=1 * E8,
     )
     detail = snap.snapshot_from_rows(
         [last_year, latest], name="测试股份"
@@ -217,6 +230,27 @@ def test_detail_fields() -> None:
     assert detail["rd_expense"] == 4 * E8, detail
     assert detail["capex"] == 8 * E8, detail
 
+    # 营运资金科目同比：应收/预付/其他应收、应付/合同负债/开发支出
+    assert detail["notes_receivable_yoy"] == 100.0, detail
+    assert detail["prepayments_yoy"] == -20.0, detail
+    assert detail["other_receivables_yoy"] == 100.0, detail
+    assert detail["accounts_payable_yoy"] == 50.0, detail
+    assert detail["contract_liabilities_yoy"] == 100.0, detail
+    assert detail["development_expenditure_yoy"] == 50.0, detail
+
+    # 三张表的完整科目按报表分组，保留元单位
+    balance = detail["balance"]
+    assert balance["notes_receivable"] == 6 * E8, balance
+    assert balance["paid_in_capital"] == 10 * E8, balance
+    assert balance["short_term_borrowings"] is None, balance
+    income = detail["income"]
+    assert income["operating_profit"] == 20 * E8, income
+    assert income["net_profit_attributable"] == 16 * E8, income
+    assert "basic_eps" not in income, income  # 每股收益不是金额，留在顶层
+    cashflow = detail["cashflow"]
+    assert cashflow["cash_from_sales"] == 95 * E8, cashflow
+    assert cashflow["ending_cash"] == 20 * E8, cashflow
+
     # 上年同期缺失时同比留空，不能拿 0 当基数
     partial = snap.snapshot_from_rows([
         row("2026-06-30", revenue=100 * E8, fixed_assets=30 * E8),
@@ -224,6 +258,9 @@ def test_detail_fields() -> None:
     assert partial["fixed_assets_yoy"] is None, partial
     assert partial["construction_in_progress_yoy"] is None, partial
     assert partial["basic_eps"] is None, partial
+    assert partial["balance"]["notes_receivable"] is None, partial
+    assert partial["income"]["operating_profit"] is None, partial
+    assert partial["cashflow"]["cash_from_sales"] is None, partial
 
     # 金融机构也有每股收益、权益和资产，明细不能像安全指标那样整组清空
     bank = snap.snapshot_from_rows([

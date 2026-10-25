@@ -17,7 +17,12 @@ from stock.announcements import build_announcements
 from stock.db_service import get_all_stocks, get_stock, get_stock_by_name
 from stock.finance_history import build_history
 from stock.finance_service import ensure_financials
-from stock.finance_snapshot import build_snapshot
+from stock.finance_snapshot import (
+    BALANCE_DETAIL_FIELDS,
+    CASHFLOW_DETAIL_FIELDS,
+    INCOME_DETAIL_FIELDS,
+    build_snapshot,
+)
 from stock.segments import ensure_segments, segments_from_rows
 from stock.utils import get_stock_prefix
 from stock.valuation import build_valuation
@@ -100,7 +105,13 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "get_finance",
-            "description": "财务快照：营收/净利及同比、毛利率、净利率、ROE、负债率、现金流、有息负债、利息保障、商誉、应收/存货同比；另含每股收益、归母净资产、固定资产/在建工程、应付/合同负债、投资收益与减值、研发与资本开支、单季趋势",
+            "description": (
+                "财务快照：营收/净利及同比、毛利率、净利率、ROE、负债率、现金流、"
+                "有息负债、利息保障、商誉、应收/存货同比；另含每股收益、归母净资产、"
+                "固定资产/在建工程、应付/合同负债、投资收益与减值、研发与资本开支、"
+                "单季趋势，以及 balance_detail / income_detail / cashflow_detail "
+                "三张表的完整科目（金额均为亿元）"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"company": _COMPANY},
@@ -465,6 +476,25 @@ def _finance(code: str) -> ToolResult:
         "treasury_stock_yi": _yi(detail.get("treasury_stock")),
         "rd_expense_yi": _yi(detail.get("rd_expense")),
         "capex_yi": _yi(detail.get("capex")),
+        # 营运资金科目同比，和营收增速一起看
+        "notes_receivable_yoy": _pct(detail.get("notes_receivable_yoy")),
+        "prepayments_yoy": _pct(detail.get("prepayments_yoy")),
+        "other_receivables_yoy": _pct(detail.get("other_receivables_yoy")),
+        "accounts_payable_yoy": _pct(detail.get("accounts_payable_yoy")),
+        "contract_liabilities_yoy": _pct(detail.get("contract_liabilities_yoy")),
+        "development_expenditure_yoy": _pct(
+            detail.get("development_expenditure_yoy")
+        ),
+        # 三张表的完整科目，字段名统一带 _yi；按报表分组避免和摘要字段混淆
+        "balance_detail": _money_detail(
+            detail.get("balance"), BALANCE_DETAIL_FIELDS
+        ),
+        "income_detail": _money_detail(
+            detail.get("income"), INCOME_DETAIL_FIELDS
+        ),
+        "cashflow_detail": _money_detail(
+            detail.get("cashflow"), CASHFLOW_DETAIL_FIELDS
+        ),
         "trend": [
             {
                 "period": row.get("report_date"),
@@ -1017,6 +1047,12 @@ def _round(value, digits: int):
 def _yi(value):
     """元 -> 亿元，保留两位。"""
     return None if value is None else round(value / 1e8, 2)
+
+
+def _money_detail(values, fields) -> dict:
+    """把一组元单位的报表科目统一换算成 ``*_yi``。"""
+    values = values or {}
+    return {f"{field}_yi": _yi(values.get(field)) for field in fields}
 
 
 def _pct(value):

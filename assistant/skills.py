@@ -34,7 +34,7 @@ BUSINESS_MODEL = Skill(
 3. 看成本与利润质量：主要成本项、毛利率水平、费用率；投资收益、公允价值变动、资产/信用减值损失在 get_finance 里能看到，用来判断利润是否主要来自主营。合同负债/预收款、应付账款反映对下游预收与对上游占款的能力，要和收入规模一起看。工具数据里没有非经常性损益时，明确写「资料不足」，不要猜。
 4. 写 2-3 条关键不确定点：哪个数据最可能被误读、哪块业务最看不懂。
 
-取数建议：get_company_profile 看主营描述与行业；get_segments 看产品与地区构成；get_finance 看最新一期毛利率、净利率、投资收益与减值、合同负债与应付账款；费用率及其多年趋势用 get_financial_history 的年度序列（销售、管理、研发费用率都在里面）；get_announcements 看是否有重大变化。对照另一家公司时分别取数、分别引用。""",
+取数建议：get_company_profile 看主营描述与行业；get_segments 看产品与地区构成；get_finance 看最新一期毛利率、净利率、投资收益与减值、合同负债与应付账款；需要拆成本费用或利润分项时看 get_finance 的 income_detail；费用率及其多年趋势用 get_financial_history 的年度序列（销售、管理、研发费用率都在里面）；get_announcements 看是否有重大变化。对照另一家公司时分别取数、分别引用。""",
 )
 
 MOAT = Skill(
@@ -122,7 +122,7 @@ FINANCIAL_SAFETY = Skill(
 3. 结论落在三档之一：安全（现金覆盖短债、利息保障充足）/ 需要关注（某一项偏紧）/ 脆弱（短债覆盖不足或利息保障过低），并说明触发条件。
 4. 给 2–3 条可验证的观察指标。
 
-取数：get_finance 取有息负债、利息保障、商誉、应收/存货同比、应付账款与合同负债；get_financial_history 看多年有息负债、负债率与现金流；get_announcements 找商誉减值、定增、可转债、股权激励。对照另一家公司时分别取数、分别引用。
+取数：get_finance 取有息负债、利息保障、商誉、应收/存货同比、应付账款与合同负债；需要看借款期限结构、其他应收/应付款或权益科目时看 balance_detail；get_financial_history 看多年有息负债、负债率与现金流；get_announcements 找商誉减值、定增、可转债、股权激励。对照另一家公司时分别取数、分别引用。
 
 禁止：
 - 只看资产负债率就下结论，或把高负债直接等同于危险。
@@ -152,7 +152,7 @@ GROWTH_OUTLOOK = Skill(
 3. 给三档情景，每档写清关键假设和触发条件。
 4. 给 2–3 条可验证的观察指标（份额、单店/单吨收入、产能利用率、新业务收入占比等）。
 
-取数：get_financial_history 看多年营收/利润增速、资本开支、固定资产/在建工程与现金流；get_finance 看最新一期固定资产、在建工程、资本开支与研发投入；get_segments 看哪块业务在增长、哪块在萎缩；get_company_profile 看行业与主营；get_announcements 看扩产、并购、新业务。对照另一家公司时分别取数、分别引用。
+取数：get_financial_history 看多年营收/利润增速、资本开支、固定资产/在建工程与现金流；get_finance 看最新一期固定资产、在建工程、资本开支与研发投入，cashflow_detail 里看投资活动现金流与资本开支的对应关系；get_segments 看哪块业务在增长、哪块在萎缩；get_company_profile 看行业与主营；get_announcements 看扩产、并购、新业务。对照另一家公司时分别取数、分别引用。
 
 禁止：
 - 把历史增速线性外推成未来增速。

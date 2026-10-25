@@ -29,7 +29,7 @@ def test_business_model_skill() -> None:
     assert skill.title.startswith("第一问")
     text = skill.instructions
     for phrase in ("三句话", "收入", "毛利率", "非经常性", "不确定",
-                   "投资收益", "合同负债"):
+                   "投资收益", "合同负债", "income_detail"):
         assert phrase in text, phrase
 
 
@@ -63,7 +63,7 @@ def test_financial_safety_skill() -> None:
     text = skill.instructions
     for phrase in ("有息负债", "利息保障", "短期", "商誉", "应收账款", "存货",
                    "压力测试", "资料不足", "资产负债率", "应付账款",
-                   "合同负债", "get_finance"):
+                   "合同负债", "balance_detail", "get_finance"):
         assert phrase in text, phrase
     assert "不要机械套用" in text
     assert "口径不可比" in text
@@ -76,8 +76,8 @@ def test_growth_outlook_skill() -> None:
     assert skill.title.startswith("第五问")
     text = skill.instructions
     for phrase in ("市场空间", "渗透率", "份额", "再投资", "资本开支",
-                   "固定资产", "在建工程", "资料不足", "get_segments",
-                   "线性外推"):
+                   "固定资产", "在建工程", "cashflow_detail", "资料不足",
+                   "get_segments", "线性外推"):
         assert phrase in text, phrase
     assert "不要用过去几年的增速外推未来" in text
     assert "不要编数字" in text
