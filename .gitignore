@@ -22,4 +22,5 @@ test/*.db
 # 投资助手 Web 页面的运行时状态、对话库与日志
 data/assistant_state.json
 data/assistant.db
+data/backups/
 data/assistant_web.log

@@ -93,6 +93,24 @@ def test_store_roundtrip() -> None:
         assert [item.id for item in store.recent()] == [first]
 
 
+def test_backup_on_reopen() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / "conv.db"
+        store = ConversationStore(path)
+        store.create(build_title("东鹏饮料", "靠什么赚钱"), "605499", "东鹏饮料")
+        # 第一次创建时没有旧库可备份
+        assert not (Path(folder) / "backups").exists()
+
+        ConversationStore(path)
+        backups = list((Path(folder) / "backups").glob("conv-*.db"))
+        assert len(backups) == 1, backups
+        assert backups[0].stat().st_size > 0
+
+        # 同一天再打开不重复备份
+        ConversationStore(path)
+        assert len(list((Path(folder) / "backups").glob("conv-*.db"))) == 1
+
+
 def test_agent_restore_rebuilds_registry() -> None:
     source = Source(
         "finance:605499:2026-06-30",
@@ -141,6 +159,7 @@ def test_agent_restore_rebuilds_registry() -> None:
 def main() -> None:
     test_build_title()
     test_store_roundtrip()
+    test_backup_on_reopen()
     test_agent_restore_rebuilds_registry()
     print("PASS")
     sys.stdout.flush()

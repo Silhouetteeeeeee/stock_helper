@@ -179,6 +179,8 @@ def _button(at, label: str):
 
 def _clear_store() -> None:
     store = ConversationStore()
+    # 删除操作只能发生在临时库，绝不能碰用户的 data/assistant.db
+    assert Path(store.path).resolve().parent == Path(_STATE_DIR).resolve(), store.path
     for item in store.recent(limit=100):
         store.delete(item.id)
 

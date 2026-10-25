@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ DB_PATH = Path(os.environ.get("MARKET_ASSISTANT_DB", DEFAULT_PATH))
 
 TITLE_LIMIT = 30
 RECENT_LIMIT = 20
+BACKUP_KEEP = 7
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversation (
@@ -77,7 +79,22 @@ class ConversationStore:
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = Path(path or DB_PATH)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._backup()
         self._ensure_schema()
+
+    def _backup(self) -> None:
+        """每天第一次打开时留一份副本，并只保留最近几份。"""
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            return
+        folder = self.path.parent / "backups"
+        target = folder / f"{self.path.stem}-{datetime.now():%Y%m%d}.db"
+        if target.exists():
+            return
+        folder.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(self.path, target)
+        backups = sorted(folder.glob(f"{self.path.stem}-*.db"))
+        for old in backups[:-BACKUP_KEEP]:
+            old.unlink()
 
     @contextmanager
     def _session(self):
