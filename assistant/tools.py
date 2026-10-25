@@ -31,6 +31,7 @@ from stock.insider_trades import PAGE_URL as INSIDER_URL
 from stock.insider_trades import build_insider_trades
 from stock.lockups import build_lockups
 from stock.pledges import build_pledges
+from stock.research import build_research
 from stock.management import PAGE_URL as MANAGEMENT_URL
 from stock.management import build_management
 from stock.peers import build_peers
@@ -375,6 +376,28 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "get_institutional_research",
+            "description": (
+                "机构调研：近 N 年调研场次、参与机构家数、机构类型分布、"
+                "接待高管、调研方式与最近一场纪要摘要；调研热度不等于"
+                "基本面，纪要中的说法不代表承诺"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "years": {
+                        "type": "integer",
+                        "description": "回看年数，1-10，默认 3",
+                    },
+                    "company": _COMPANY,
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_announcements",
             "description": "近期公告：带标签的事件（回购、减持、重大合同等）",
             "parameters": {
@@ -576,6 +599,8 @@ def run_tool(
             return _pledges(code, arguments)
         if name == "get_earnings_forecasts":
             return _earnings_forecasts(code, arguments)
+        if name == "get_institutional_research":
+            return _institutional_research(code, arguments)
         if name == "get_announcements":
             return _announcements(code, arguments)
         if name == "get_valuation":
@@ -1380,6 +1405,70 @@ def _earnings_forecasts(code: str, arguments: dict) -> ToolResult:
     )
 
 
+def _institutional_research(code: str, arguments: dict) -> ToolResult:
+    try:
+        years = int(arguments.get("years", 3))
+    except (TypeError, ValueError):
+        years = 3
+    years = min(max(years, 1), 10)
+
+    data = build_research(code, years=years)
+    events = [
+        _research_event(item) for item in data.get("events") or []
+    ]
+    latest = (
+        _research_event(data["latest"]) if data.get("latest") else None
+    )
+
+    name = data.get("name")
+    as_of = data.get("as_of") or ""
+    source = Source(
+        id=f"research:{code}:{as_of}" if as_of else f"research:{code}",
+        label="机构调研",
+        detail=f"{name or code} 机构调研 {as_of}".strip(),
+        as_of=as_of,
+        fetched_at=data.get("fetched_at") or "",
+        url=data.get("url") or "",
+    )
+    return ToolResult(
+        ok=True,
+        company=code,
+        as_of=as_of or None,
+        sources=(source,),
+        data={
+            "code": code,
+            "name": name,
+            "as_of": as_of or None,
+            "window_start": data.get("window_start"),
+            "window_end": data.get("window_end"),
+            "years": data.get("years", years),
+            "has_research": data.get("has_research", False),
+            "latest": latest,
+            "events": events,
+            "annual": [
+                {
+                    "year": item.get("year"),
+                    "events": item.get("events"),
+                    "institution_visits": item.get("institution_visits"),
+                }
+                for item in data.get("annual") or []
+            ],
+            "org_types": [
+                {
+                    "type": item.get("type"),
+                    "count": item.get("count"),
+                }
+                for item in data.get("org_types") or []
+            ],
+            "events_truncated": data.get("events_truncated", 0),
+            "rows_truncated": data.get("truncated", False),
+            "counts": _research_counts(data.get("counts") or {}),
+            "notes": data.get("notes") or [],
+            "stale": data.get("stale", False),
+        },
+    )
+
+
 def _announcements(code: str, arguments: dict) -> ToolResult:
     try:
         days = int(arguments.get("days") or 180)
@@ -2144,6 +2233,41 @@ def _forecast_counts(item: dict) -> dict:
         "latest_eps_high": _round(item.get("latest_eps_high"), 4),
         "latest_revenue_low_yi": _yi(item.get("latest_revenue_low")),
         "latest_revenue_high_yi": _yi(item.get("latest_revenue_high")),
+    }
+
+
+def _research_event(item: dict) -> dict:
+    """一场机构调研：参与机构、类型、接待人员与纪要摘要。"""
+    item = item or {}
+    return {
+        "date": item.get("date"),
+        "notice_date": item.get("notice_date"),
+        "place": item.get("place"),
+        "ways": item.get("ways") or [],
+        "receptionists": item.get("receptionists") or [],
+        "institution_count": item.get("institution_count"),
+        "disclosed_count": item.get("disclosed_count"),
+        "org_types": [
+            {"type": row.get("type"), "count": row.get("count")}
+            for row in item.get("org_types") or []
+        ],
+        "institutions": (item.get("institutions") or [])[:20],
+        "content": _clip(item.get("content") or "", 600) or None,
+    }
+
+
+def _research_counts(item: dict) -> dict:
+    """机构调研总览：场次、机构家次与最近一场。"""
+    item = item or {}
+    return {
+        "events": item.get("events", 0),
+        "institution_visits": item.get("institution_visits", 0),
+        "latest_date": item.get("latest_date"),
+        "latest_notice_date": item.get("latest_notice_date"),
+        "latest_institution_count": item.get("latest_institution_count"),
+        "latest_place": item.get("latest_place"),
+        "events_12m": item.get("events_12m", 0),
+        "institution_visits_12m": item.get("institution_visits_12m", 0),
     }
 
 

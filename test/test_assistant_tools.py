@@ -148,8 +148,8 @@ def test_schemas() -> None:
         "get_financial_history", "get_segments", "get_management",
         "get_shareholders", "get_peers", "get_dividends", "get_insider_trades",
         "get_buybacks", "get_lockup_expiries", "get_pledges",
-        "get_earnings_forecasts", "get_announcements",
-        "get_valuation", "calc_valuation",
+        "get_earnings_forecasts", "get_institutional_research",
+        "get_announcements", "get_valuation", "calc_valuation",
     ], names
     for item in tools.schemas():
         assert item["type"] == "function"
@@ -1307,6 +1307,84 @@ def test_earnings_forecasts_tool() -> None:
     assert result.data["notes"] == ["预告可能被修订"], result.data
 
 
+def test_institutional_research_tool() -> None:
+    latest = {
+        "date": "2026-08-21", "notice_date": "2026-08-23",
+        "place": "合肥总部", "ways": ["业绩说明会", "全景路演"],
+        "receptionists": ["董事长 刘庆峰"],
+        "institution_count": 43, "disclosed_count": 2,
+        "org_types": [
+            {"type": "证券公司", "count": 1},
+            {"type": "其它", "count": 1},
+        ],
+        "institutions": ["北工投资", "国海证券"],
+        "content": "投资者关系活动主要内容介绍。问：算力进展？答：逐步追赶。",
+    }
+    counts = {
+        "events": 2, "institution_visits": 48,
+        "latest_date": "2026-08-21",
+        "latest_notice_date": "2026-08-23",
+        "latest_institution_count": 43,
+        "latest_place": "合肥总部",
+        "events_12m": 2, "institution_visits_12m": 48,
+    }
+    data = {
+        "code": "002230", "name": "科大讯飞", "as_of": "2026-08-23",
+        "fetched_at": "2026-10-25 10:00:00", "stale": False,
+        "window_start": "2024-01-01", "window_end": "2026-10-25",
+        "years": 3, "has_research": True, "latest": latest,
+        "events": [latest], "annual": [
+            {"year": 2026, "events": 2, "institution_visits": 48},
+        ], "org_types": [
+            {"type": "证券公司", "count": 2},
+            {"type": "其它", "count": 1},
+        ], "events_truncated": 0, "truncated": False,
+        "counts": counts, "notes": ["调研热度不等于基本面"],
+        "url": "https://data.eastmoney.com/jgdy/",
+    }
+    captured = {}
+
+    def fake_build(code: str, **kwargs) -> dict:
+        captured.update(kwargs)
+        return data
+
+    original = tools.build_research
+    tools.build_research = fake_build  # type: ignore[assignment]
+    try:
+        result = tools.run_tool(
+            "get_institutional_research", {"years": 99},
+            default_company="002230",
+        )
+    finally:
+        tools.build_research = original  # type: ignore[assignment]
+
+    assert captured["years"] == 10, captured
+    assert result.ok is True, result
+    assert result.as_of == "2026-08-23", result
+    assert result.sources[0].id == "research:002230:2026-08-23", result.sources
+    assert result.sources[0].label == "机构调研", result.sources
+    assert result.sources[0].url == "https://data.eastmoney.com/jgdy/", result.sources
+    assert result.sources[0].detail == "科大讯飞 机构调研 2026-08-23", result.sources
+
+    event = result.data["latest"]
+    assert event["date"] == "2026-08-21", event
+    assert event["institution_count"] == 43, event
+    assert event["disclosed_count"] == 2, event
+    assert event["institutions"] == ["北工投资", "国海证券"], event
+    assert event["ways"] == ["业绩说明会", "全景路演"], event
+    assert "算力" in event["content"], event
+
+    assert result.data["counts"]["institution_visits"] == 48, result.data
+    assert result.data["annual"][0]["institution_visits"] == 48, result.data
+    assert result.data["org_types"] == [
+        {"type": "证券公司", "count": 2},
+        {"type": "其它", "count": 1},
+    ], result.data
+    assert result.data["rows_truncated"] is False, result.data
+    assert result.data["has_research"] is True, result.data
+    assert result.data["notes"] == ["调研热度不等于基本面"], result.data
+
+
 def test_segments_region_missing() -> None:
     global REGION
     REGION = False
@@ -1656,6 +1734,7 @@ def main() -> None:
     test_lockup_expiries_tool()
     test_pledges_tool()
     test_earnings_forecasts_tool()
+    test_institutional_research_tool()
     test_segments_region_missing()
     test_announcements_sources()
     test_valuation()
