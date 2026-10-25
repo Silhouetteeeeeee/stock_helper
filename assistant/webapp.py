@@ -16,9 +16,13 @@ from assistant.agent import ResearchAgent, build_client
 from assistant.env import load_env
 from assistant.render import cite_text, source_lines
 from assistant.selection import read_selection
+from assistant.store import ConversationStore, build_title
 
 WELCOME = "选一只股票后提问，例如「它靠什么赚钱」「毛利率为什么下滑」。回答会标注数据来源。"
 MAX_ISSUES = 2
+RECENT_LIMIT = 10
+
+STORE = ConversationStore()
 
 st.set_page_config(
     page_title="投资助手",
@@ -50,6 +54,8 @@ def _init_state() -> None:
         ("agent_code", None),
         ("active_code", None),
         ("active_name", ""),
+        ("window_code", None),
+        ("conversation_id", None),
         ("notice", ""),
     ):
         if key not in st.session_state:
@@ -60,6 +66,7 @@ def _reset_conversation() -> None:
     st.session_state.messages = []
     st.session_state.agent = None
     st.session_state.agent_code = None
+    st.session_state.conversation_id = None
     st.session_state.agent_error = ""
 
 
@@ -77,12 +84,44 @@ def _switch_company(code: str, name: str) -> None:
         st.session_state.notice = f"已切换到 {name or code}（{code}），开始新对话。"
 
 
+def _open_conversation(item) -> None:
+    """从最近列表恢复一段对话；下一轮提问时再回放原始消息。"""
+    st.session_state.active_code = item.primary_code or None
+    st.session_state.active_name = item.primary_name or item.primary_code
+    st.session_state.messages = STORE.messages(item.id)
+    st.session_state.conversation_id = item.id
+    st.session_state.agent = None
+    st.session_state.agent_code = None
+    st.session_state.notice = f"已打开对话：{item.title}"
+    st.rerun()
+
+
+def _ensure_conversation(code: str, name: str, question: str) -> int:
+    conversation_id = st.session_state.get("conversation_id")
+    if conversation_id:
+        return int(conversation_id)
+    conversation_id = STORE.create(build_title(name, question), code, name)
+    st.session_state.conversation_id = conversation_id
+    return conversation_id
+
+
+def _raw_history(conversation_id: int) -> list[dict]:
+    raw: list[dict] = []
+    for message in STORE.messages(conversation_id):
+        if message.get("role") == "assistant":
+            raw.extend(message.get("raw") or [])
+    return raw
+
+
 def _agent_for(code: str):
     agent = st.session_state.get("agent")
     if agent is not None and st.session_state.get("agent_code") == code:
         return agent
     try:
         agent = ResearchAgent(build_client(), default_company=code)
+        conversation_id = st.session_state.get("conversation_id")
+        if conversation_id:
+            agent.restore_history(_raw_history(conversation_id))
     except Exception as error:  # noqa: BLE001 - 缺 key 等要显示在页面上
         st.session_state.agent_error = str(error) or "助手初始化失败"
         return None
@@ -171,21 +210,46 @@ with st.sidebar:
     else:
         st.caption("行情窗口还没有选中股票")
 
-    if st.button("清空对话", use_container_width=True):
+    if st.button("新对话", use_container_width=True):
         _reset_conversation()
-        st.session_state.notice = "对话已清空。"
+        st.session_state.notice = "已开始新对话，之前的记录在下方列表中。"
+        st.rerun()
+    if st.session_state.get("conversation_id") and st.button(
+        "删除当前对话", use_container_width=True
+    ):
+        STORE.delete(int(st.session_state.conversation_id))
+        _reset_conversation()
+        st.session_state.notice = "已删除当前对话。"
         st.rerun()
 
-    st.divider()
     st.caption("回答里的 [n] 对应下方来源。数据来自本地已入库的财报、公告、调研与行情。")
 
-if override:
-    _switch_company(override, override)
-elif state_stock:
-    _switch_company(state_stock, state_name)
+# 只有行情窗口真的换了标的才切换公司；打开历史对话不会被下一次 rerun 冲掉
+window_code = override or state_stock
+window_name = override or state_name
+if window_code != st.session_state.get("window_code"):
+    st.session_state.window_code = window_code
+    if window_code:
+        _switch_company(window_code, window_name)
 
 active_code = st.session_state.get("active_code")
 active_name = st.session_state.get("active_name") or active_code
+
+with st.sidebar:
+    st.divider()
+    st.markdown("### 最近对话")
+    query = st.text_input(
+        "搜索对话", placeholder="公司、代码或标题", key="conversation_query"
+    ).strip()
+    recent = STORE.recent(primary_code=active_code or None, query=query, limit=RECENT_LIMIT)
+    if not recent:
+        st.caption("还没有保存的对话。")
+    for item in recent:
+        current = " · 当前" if item.id == st.session_state.get("conversation_id") else ""
+        if st.button(
+            f"{item.title}{current}", key=f"open_{item.id}", use_container_width=True
+        ):
+            _open_conversation(item)
 
 st.title("投资助手")
 if active_code:
@@ -206,17 +270,24 @@ if not active_code:
 
 prompt = st.chat_input("问一句，如：毛利率为什么下滑？", disabled=not active_code)
 if prompt and active_code:
+    conversation_id = _ensure_conversation(
+        active_code, active_name or active_code, prompt
+    )
+    st.session_state.messages.append({"role": "user", "text": prompt})
+    STORE.append(conversation_id, "user", {"text": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
     agent = _agent_for(active_code)
     if agent is None:
         error = st.session_state.get("agent_error") or "缺少模型配置"
         text = f"助手不可用：{error}"
         st.session_state.messages.append({"role": "error", "text": text})
+        STORE.append(conversation_id, "error", {"text": text})
         with st.chat_message("assistant"):
             st.error(text)
     else:
-        st.session_state.messages.append({"role": "user", "text": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+        start = agent.history_size()
         with st.chat_message("assistant"):
             with st.spinner("研究中…会调用多个数据工具，通常需要 10–30 秒"):
                 try:
@@ -225,7 +296,10 @@ if prompt and active_code:
                     text = f"研究失败：{error}"
                     st.error(text)
                     st.session_state.messages.append({"role": "error", "text": text})
+                    STORE.append(conversation_id, "error", {"text": text})
                 else:
                     message = _answer_message(answer)
+                    message["raw"] = agent.history_since(start)
                     _render_assistant(message)
                     st.session_state.messages.append(message)
+                    STORE.append(conversation_id, "assistant", message)

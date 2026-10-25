@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 from dataclasses import dataclass
@@ -87,6 +88,35 @@ class ResearchAgent:
             raise AssistantError(result.error or f"无法识别公司：{company}")
         self.default_company = result.data["code"]
         return self.default_company
+
+    def history_size(self) -> int:
+        """当前原始消息条数，用来截取一轮新增的消息。"""
+        return len(self._history)
+
+    def history_since(self, start: int) -> list[dict]:
+        """取 ``start`` 之后的原始消息副本，供持久化保存。"""
+        return copy.deepcopy(self._history[start:])
+
+    def restore_history(self, messages: list[dict]) -> None:
+        """回放已保存的原始消息，并从工具结果里重建引用注册表。
+
+        注册表不单独存：工具结果本来就带着完整来源，扫一遍就能恢复，
+        续聊时模型引用上一轮的来源依然能解析成 citation。
+        """
+        self._history = copy.deepcopy(list(messages))
+        self._registry = {}
+        for message in self._history:
+            if message.get("role") != "tool":
+                continue
+            try:
+                payload = json.loads(message.get("content") or "{}")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            for item in payload.get("sources") or []:
+                if isinstance(item, dict) and item.get("id"):
+                    self._registry[str(item["id"])] = _source_from_dict(item)
 
     def ask(self, question: str) -> Answer:
         """问一个问题，跑完整个循环后返回结构化回答。
@@ -202,6 +232,18 @@ class ResearchAgent:
             except Exception as error:  # noqa: BLE001 - 鉴权/参数错误重试也没用
                 raise AssistantError(f"模型接口失败：{error}") from error
         raise AssistantError(f"模型接口失败：{last_error}")
+
+
+def _source_from_dict(item: dict) -> Source:
+    """容忍缺字段的旧数据，构造 Source 时只取认识的键。"""
+    return Source(
+        id=str(item.get("id", "")),
+        label=str(item.get("label", "")),
+        detail=str(item.get("detail", "")),
+        as_of=str(item.get("as_of", "")),
+        fetched_at=str(item.get("fetched_at", "")),
+        url=str(item.get("url", "")),
+    )
 
 
 def _parse_arguments(raw) -> dict:

@@ -23,6 +23,7 @@ from assistant import server
 from assistant.models import Source
 from assistant.render import cite_text, source_lines
 from assistant.selection import read_selection, write_selection
+from assistant.store import ConversationStore, build_title
 
 
 def _closed_port() -> int:
@@ -117,14 +118,36 @@ class _FakeAnswer:
 class _FakeAgent:
     def __init__(self) -> None:
         self.asked: list[str] = []
+        self._history: list[dict] = []
 
     def ask(self, question: str):
         self.asked.append(question)
+        self._history.append({"role": "user", "content": question})
+        self._history.append({"role": "assistant", "content": _FakeAnswer.text})
         return _FakeAnswer()
+
+    def history_size(self) -> int:
+        return len(self._history)
+
+    def history_since(self, start: int) -> list[dict]:
+        return [dict(message) for message in self._history[start:]]
 
 
 def _app():
     return AppTest.from_file(str(server.WEBAPP), default_timeout=60)
+
+
+def _button(at, label: str):
+    for button in at.button:
+        if button.label == label:
+            return button
+    raise AssertionError(f"没有找到按钮：{label}（{ [b.label for b in at.button] }）")
+
+
+def _clear_store() -> None:
+    store = ConversationStore()
+    for item in store.recent(limit=100):
+        store.delete(item.id)
 
 
 def test_webapp_flow() -> None:
@@ -157,10 +180,67 @@ def test_webapp_flow() -> None:
     assert "[1] 财报 · 东财 · 2026-06-30" in captions, captions
     assert "研究过程：1 次取数" in captions, captions
 
-    at.button[0].click().run()
+    # 对话已落库：一问一答两条，原始消息留给续聊
+    store = ConversationStore()
+    saved = store.recent(primary_code="605499")
+    assert len(saved) == 1, saved
+    assert saved[0].title.startswith("东鹏饮料 · 毛利率为什么下滑")
+    saved_messages = store.messages(saved[0].id)
+    assert [message["role"] for message in saved_messages] == ["user", "assistant"]
+    assert saved_messages[1]["raw"] == [
+        {"role": "user", "content": "毛利率为什么下滑"},
+        {"role": "assistant", "content": _FakeAnswer.text},
+    ], saved_messages[1]["raw"]
+
+    # 新对话只清空当前会话，记录留在最近列表
+    _button(at, "新对话").click().run()
     assert not at.exception, list(at.exception)
     assert at.session_state["messages"] == []
-    assert any("已清空" in item.value for item in at.info)
+    assert at.session_state["conversation_id"] is None
+    assert any("新对话" in item.value for item in at.info)
+    assert len(store.recent(primary_code="605499")) == 1
+
+
+def test_webapp_resume_and_delete() -> None:
+    if AppTest is None:
+        return
+    _clear_store()
+    write_selection("600519", "贵州茅台")
+
+    store = ConversationStore()
+    conversation_id = store.create(
+        build_title("贵州茅台", "渠道怎么样"), "600519", "贵州茅台"
+    )
+    store.append(conversation_id, "user", {"text": "渠道怎么样"})
+    store.append(conversation_id, "assistant", {
+        "text": "直营占比提升 [1]",
+        "sources": [Source("fin:9", "财报", "东财", "2026-06-30", "").to_dict()],
+        "trace": 2,
+        "issues": [],
+        "raw": [],
+    })
+
+    at = _app()
+    at.run()
+    assert not at.exception, list(at.exception)
+    assert at.session_state["messages"] == []
+
+    # 最近列表在左侧，点标题即可恢复这段对话
+    _button(at, "贵州茅台 · 渠道怎么样").click().run()
+    assert not at.exception, list(at.exception)
+    assert at.session_state["conversation_id"] == conversation_id
+    assert [message["role"] for message in at.session_state["messages"]] == [
+        "user",
+        "assistant",
+    ]
+    markdown = "\n".join(item.value for item in at.markdown)
+    assert "直营占比提升 [1]" in markdown, markdown
+
+    _button(at, "删除当前对话").click().run()
+    assert not at.exception, list(at.exception)
+    assert at.session_state["messages"] == []
+    assert store.messages(conversation_id) == []
+    assert any("已删除" in item.value for item in at.info)
 
 
 def test_webapp_index_selection() -> None:
@@ -181,6 +261,7 @@ def main() -> None:
     test_render_citations()
     test_server_helpers()
     test_webapp_flow()
+    test_webapp_resume_and_delete()
     test_webapp_index_selection()
     print("PASS")
     sys.stdout.flush()
