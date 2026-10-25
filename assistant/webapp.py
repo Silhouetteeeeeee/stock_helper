@@ -134,6 +134,15 @@ def _agent_for(code: str):
 # ---------------------------------------------------------------------------
 # 渲染
 # ---------------------------------------------------------------------------
+def _trace_line(step: dict) -> str:
+    """一轮取数压成一行：第几轮、工具、公司、数据日期、结果。"""
+    name = step.get("name") or "未知工具"
+    company = step.get("company") or "--"
+    as_of = step.get("as_of") or "无日期"
+    outcome = "成功" if step.get("ok") else f"失败：{step.get('error') or '未知错误'}"
+    return f"{step.get('round') or '-'}. {name} · {company} · {as_of} · {outcome}"
+
+
 def _render_assistant(message: dict) -> None:
     sources = message.get("sources") or []
     body = cite_text(message.get("text", ""), sources)
@@ -143,9 +152,19 @@ def _render_assistant(message: dict) -> None:
         st.caption("来源：")
         for line in lines:
             st.caption(line)
-    steps = int(message.get("trace") or 0)
-    if steps:
-        st.caption(f"研究过程：{steps} 次取数")
+
+    # 新消息存完整步骤；旧消息只有次数，退化成一行说明
+    trace = message.get("trace")
+    steps = list(trace) if isinstance(trace, list) else []
+    count = len(steps) if steps else int(trace or 0)
+    if count:
+        label = f"研究过程：{count} 次取数"
+        if steps:
+            with st.expander(label):
+                for step in steps:
+                    st.markdown(_trace_line(step))
+        else:
+            st.caption(label)
     for issue in message.get("issues") or []:
         st.caption(f"提示：{issue}")
 
@@ -178,7 +197,7 @@ def _answer_message(answer) -> dict:
         "role": "assistant",
         "text": getattr(answer, "text", "") or "",
         "sources": sources,
-        "trace": len(getattr(answer, "trace", None) or []),
+        "trace": list(getattr(answer, "trace", None) or []),
         "issues": [issue for issue in issues if issue],
     }
 

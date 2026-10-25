@@ -111,7 +111,13 @@ class _FakeAnswer:
         Source("fin:1", "财报", "东财", "2026-06-30", "2026-10-25 10:00:00"),
         Source("fin:2", "公告", "东财", "2026-08-20", "2026-10-25 10:00:00"),
     ]
-    trace = [{"name": "get_finance"}]
+    trace = [{
+        "round": 1,
+        "name": "get_finance",
+        "company": "605499",
+        "as_of": "2026-06-30",
+        "ok": True,
+    }]
     issues = []
 
 
@@ -171,14 +177,15 @@ def test_webapp_flow() -> None:
 
     messages = at.session_state["messages"]
     assert [message["role"] for message in messages] == ["user", "assistant"]
-    assert messages[1]["trace"] == 1
+    assert messages[1]["trace"][0]["name"] == "get_finance"
 
     markdown = "\n".join(item.value for item in at.markdown)
     assert "毛利率下降 [1]" in markdown, markdown
     assert "继续观察 [2]" in markdown, markdown
+    assert "1. get_finance · 605499 · 2026-06-30 · 成功" in markdown, markdown
     captions = [item.value for item in at.caption]
     assert "[1] 财报 · 东财 · 2026-06-30" in captions, captions
-    assert "研究过程：1 次取数" in captions, captions
+    assert [item.label for item in at.expander] == ["研究过程：1 次取数"]
 
     # 对话已落库：一问一答两条，原始消息留给续聊
     store = ConversationStore()
@@ -235,6 +242,8 @@ def test_webapp_resume_and_delete() -> None:
     ]
     markdown = "\n".join(item.value for item in at.markdown)
     assert "直营占比提升 [1]" in markdown, markdown
+    # 旧数据只存了次数，不能因此报错
+    assert any("研究过程：2 次取数" in item.value for item in at.caption)
 
     _button(at, "删除当前对话").click().run()
     assert not at.exception, list(at.exception)
