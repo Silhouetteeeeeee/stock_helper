@@ -15,6 +15,7 @@ class TitleBar(QWidget):
     minimize_clicked = Signal()
     close_clicked = Signal()
     input_clicked = Signal()
+    assistant_clicked = Signal()
 
     def __init__(self, title: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -34,6 +35,11 @@ class TitleBar(QWidget):
         self._input_button.setCheckable(True)
         self._input_button.clicked.connect(self.input_clicked.emit)
 
+        self._assistant_button = self._icon_button("AI", "投资助手")  # 投资助手面板开关
+        self._assistant_button.setCheckable(True)
+        self._assistant_button.setFont(ui_font(8, bold=True))
+        self._assistant_button.clicked.connect(self.assistant_clicked.emit)
+
         self._min_button = self._icon_button("—", "锁定迷你")   # 收起/锁定按钮
         self._min_button.clicked.connect(self.minimize_clicked.emit)
 
@@ -47,6 +53,7 @@ class TitleBar(QWidget):
         layout.addWidget(self._live_dot)
         layout.addWidget(self._title)
         layout.addStretch(1)
+        layout.addWidget(self._assistant_button)
         layout.addWidget(self._input_button)
         layout.addWidget(self._min_button)
         layout.addWidget(self._close_button)
@@ -64,6 +71,10 @@ class TitleBar(QWidget):
     def set_input_active(self, active: bool) -> None:
         """齿轮按钮的选中态与数据输入面板的显隐保持一致。"""
         self._input_button.setChecked(active)
+
+    def set_assistant_active(self, active: bool) -> None:
+        """AI 按钮的选中态与投资助手面板的显隐保持一致。"""
+        self._assistant_button.setChecked(active)
 
     def set_minimized(self, minimized: bool) -> None:
         """锁定迷你态时把收起按钮改成「展开」。"""

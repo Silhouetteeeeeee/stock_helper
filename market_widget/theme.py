@@ -98,6 +98,14 @@ def build_stylesheet() -> str:
     QPlainTextEdit:focus {{
         border-color: {PALETTE.accent};
     }}
+    QTextBrowser#AssistantView {{
+        background-color: {PALETTE.surface_alt};
+        border: 1px solid {PALETTE.border};
+        border-radius: 6px;
+        color: {PALETTE.text};
+        padding: 4px 6px;
+        selection-background-color: {PALETTE.accent};
+    }}
     QPushButton#IconButton {{
         background: transparent;
         border: none;

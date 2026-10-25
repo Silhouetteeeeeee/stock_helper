@@ -75,6 +75,7 @@ from .theme import (
     ui_font,
 )
 from .ui import (
+    AssistantPanel,
     FundamentalsPanel,
     IndexPanel,
     InputPanel,
@@ -204,6 +205,7 @@ class MarketWidget(QWidget):
         self._titlebar.minimize_clicked.connect(self.toggle_minimized)
         self._titlebar.close_clicked.connect(self.close)
         self._titlebar.input_clicked.connect(self.toggle_input_panel)
+        self._titlebar.assistant_clicked.connect(self.toggle_assistant_panel)
 
         # 迷你态单行（标题栏下方，只显示一只指数）
         self._mini_row = self._build_mini_row(self._card)  # 迷你态单行容器
@@ -226,6 +228,22 @@ class MarketWidget(QWidget):
         body_layout.addWidget(self._fundamentals_title)
         self._fundamentals = FundamentalsPanel(self._body)  # 财报 + 估值速览（数据由外部注入）
         body_layout.addWidget(self._fundamentals)
+        body_layout.addWidget(self._divider(self._body))
+
+        # 投资助手：默认隐藏，由标题栏 AI 按钮展开；公司跟随当前选中标的
+        self._assistant_section = QWidget(self._body)
+        assistant_layout = QVBoxLayout(self._assistant_section)
+        assistant_layout.setContentsMargins(0, 0, 0, 0)
+        assistant_layout.setSpacing(0)
+        assistant_layout.addWidget(self._divider(self._assistant_section))
+        assistant_layout.addWidget(
+            self._section_title("投资助手", self._assistant_section)
+        )
+        self._assistant = AssistantPanel(parent=self._assistant_section)
+        assistant_layout.addWidget(self._assistant)
+        self._assistant_section.hide()
+        body_layout.addWidget(self._assistant_section)
+
         body_layout.addWidget(self._divider(self._body))
         body_layout.addWidget(self._section_title("自选股", self._body))
         self._watchlist = WatchListPanel(load_watchlist(), self._body)  # 自选股列表（来自数据库）
@@ -381,6 +399,9 @@ class MarketWidget(QWidget):
             self._fundamentals.show_loading()
             self.fundamentals_requested.emit(code)
 
+        # 助手跟随选中标的；研究进行中的切换等这一轮结束再生效
+        self._assistant.set_company(code, name, is_index)
+
         self.symbol_selected.emit(code, name, is_index)
         self._schedule_refit()
 
@@ -516,6 +537,19 @@ class MarketWidget(QWidget):
         show = self._input_section.isHidden()
         self._input_section.setVisible(show)
         self._titlebar.set_input_active(show)
+        self._schedule_refit()
+
+    def toggle_assistant_panel(self) -> None:
+        """切换投资助手面板；迷你态下点击会先展开窗口。"""
+        if self._locked_minimized:
+            self._locked_minimized = False
+        if not self._hover_expanded:
+            self._hover_expanded = True
+            self._apply_mode_visibilities()
+
+        show = self._assistant_section.isHidden()
+        self._assistant_section.setVisible(show)
+        self._titlebar.set_assistant_active(show)
         self._schedule_refit()
 
     # ------------------------------------------------------------------
