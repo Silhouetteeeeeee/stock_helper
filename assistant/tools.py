@@ -23,6 +23,8 @@ from stock.finance_snapshot import (
     INCOME_DETAIL_FIELDS,
     build_snapshot,
 )
+from stock.management import PAGE_URL as MANAGEMENT_URL
+from stock.management import build_management
 from stock.segments import ensure_segments, segments_from_rows
 from stock.utils import get_stock_prefix
 from stock.valuation import build_valuation
@@ -151,6 +153,27 @@ TOOL_SCHEMAS: list[dict] = [
                     "years": {
                         "type": "integer",
                         "description": "分部历史回看期数，1-10，默认 5",
+                    },
+                    "company": _COMPANY,
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_management",
+            "description": (
+                "管理层与治理：董事会/高管/监事会/审计委员会成员，含职务、任期、"
+                "年龄、学历、薪酬、持股与简历，以及各组薪酬与持股合计"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "resume_chars": {
+                        "type": "integer",
+                        "description": "每人简历截断字数，0-2000，默认 300；0 表示不返回简历",
                     },
                     "company": _COMPANY,
                 },
@@ -344,6 +367,8 @@ def run_tool(
             return _financial_history(code, arguments)
         if name == "get_segments":
             return _segments(code, arguments)
+        if name == "get_management":
+            return _management(code, arguments)
         if name == "get_announcements":
             return _announcements(code, arguments)
         if name == "get_valuation":
@@ -643,6 +668,82 @@ def _segments(code: str, arguments: dict) -> ToolResult:
         as_of=as_of,
         sources=tuple(sources),
         data={"code": code, "name": name, "as_of": as_of, "slices": slices},
+    )
+
+
+def _management(code: str, arguments: dict) -> ToolResult:
+    try:
+        resume_chars = int(arguments.get("resume_chars", 300))
+    except (TypeError, ValueError):
+        resume_chars = 300
+    resume_chars = min(max(resume_chars, 0), 2000)
+
+    data = build_management(code)
+    if not data.get("available"):
+        return ToolResult(ok=False, company=code, error=f"{code}：没有管理层数据")
+
+    groups: list[dict] = []
+    for key, group in (data.get("groups") or {}).items():
+        members = []
+        for member in group.get("members") or []:
+            item = {
+                "name": member.get("name"),
+                "duties": member.get("duties") or [],
+                "tenure": member.get("tenure"),
+                "age": member.get("age"),
+                "education": member.get("education"),
+                "salary_wan": _wan(member.get("salary")),
+                "hold_wan": _wan(member.get("hold")),
+                "hold_ratio": _pct(member.get("hold_ratio")),
+                "direct_ratio": _pct(member.get("direct_ratio")),
+                "indirect_ratio": _pct(member.get("indirect_ratio")),
+                "is_control": member.get("is_control"),
+                "is_legal_person": member.get("is_legal_person"),
+                "resume": (
+                    (_clip(member.get("resume"), resume_chars) or None)
+                    if resume_chars else None
+                ),
+            }
+            if member.get("change"):
+                item["change"] = member["change"]
+            members.append(item)
+        groups.append({
+            "key": key,
+            "label": group.get("label"),
+            "count": group.get("count"),
+            "salary_total_wan": _wan(group.get("salary_total")),
+            "hold_ratio": _pct(group.get("hold_ratio")),
+            "direct_ratio": _pct(group.get("direct_ratio")),
+            "indirect_ratio": _pct(group.get("indirect_ratio")),
+            "members": members,
+        })
+    if not groups:
+        return ToolResult(ok=False, company=code, error=f"{code}：没有管理层数据")
+
+    name = data.get("name")
+    as_of = data.get("as_of") or ""
+    source = Source(
+        id=f"management:{code}",
+        label="管理层与持股",
+        detail=f"{name or code} {as_of}".strip(),
+        as_of=as_of,
+        fetched_at=data.get("fetched_at") or "",
+        url=MANAGEMENT_URL.format(code=code),
+    )
+    return ToolResult(
+        ok=True,
+        company=code,
+        as_of=as_of,
+        sources=(source,),
+        data={
+            "code": code,
+            "name": name,
+            "as_of": as_of,
+            "salary_year": data.get("salary_year"),
+            "count": data.get("count"),
+            "stale": data.get("stale", False),
+            "groups": groups,
+        },
     )
 
 
@@ -1095,6 +1196,11 @@ def _money_detail(values, fields) -> dict:
 def _pct(value):
     """百分比保留一位。"""
     return None if value is None else round(value, 1)
+
+
+def _wan(value):
+    """元 -> 万元，保留两位；薪酬和持股数用这个口径比"亿"更易读。"""
+    return None if value is None else round(value / 1e4, 2)
 
 
 def _company_text(value) -> tuple[str, str | None]:

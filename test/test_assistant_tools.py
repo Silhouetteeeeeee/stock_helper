@@ -145,7 +145,8 @@ def test_schemas() -> None:
     names = [item["function"]["name"] for item in tools.schemas()]
     assert names == [
         "load_skill", "resolve_company", "get_company_profile", "get_finance",
-        "get_financial_history", "get_segments", "get_announcements",
+        "get_financial_history", "get_segments", "get_management",
+        "get_announcements",
         "get_valuation", "calc_valuation",
     ], names
     for item in tools.schemas():
@@ -488,6 +489,68 @@ def test_segments_two_slices() -> None:
     assert product["history"][0]["items"][0]["yoy"] is None, product
 
 
+def test_management_tool() -> None:
+    data = {
+        "available": True, "code": "605499", "name": "东鹏饮料",
+        "as_of": "2026-10-10", "salary_year": "2025", "count": 2,
+        "fetched_at": "2026-10-25 10:00:00", "stale": False,
+        "groups": {
+            "directors": {
+                "label": "董事会", "count": 1, "salary_total": 5316100,
+                "hold_ratio": 46.7751, "direct_ratio": 45.8235,
+                "indirect_ratio": 0.9516,
+                "members": [{
+                    "name": "林木勤", "duties": ["董事长", "董事"],
+                    "tenure": "2018-01-01 至今", "age": "62岁",
+                    "education": "硕士", "salary": 5316100,
+                    "hold": 343422644.12, "hold_ratio": 46.7751,
+                    "direct_ratio": 45.8235, "indirect_ratio": 0.9516,
+                    "is_control": True, "is_legal_person": True,
+                    "resume": "林木勤先生，中国国籍，硕士学历。",
+                }],
+            },
+            "auditors": {
+                "label": "审计委员会", "count": 1, "salary_total": 112500,
+                "hold_ratio": None, "direct_ratio": None,
+                "indirect_ratio": None,
+                "members": [{
+                    "name": "王五", "duties": ["审计委员会主任委员"],
+                    "tenure": "2025-04-02 至今", "age": "70岁",
+                    "education": "博士", "salary": 112500, "hold": None,
+                    "hold_ratio": None, "direct_ratio": None,
+                    "indirect_ratio": None, "is_control": False,
+                    "is_legal_person": False, "resume": "",
+                }],
+            },
+        },
+    }
+    original = tools.build_management
+    tools.build_management = lambda code, **kwargs: data  # type: ignore[assignment]
+    try:
+        result = tools.run_tool(
+            "get_management", {"resume_chars": 5}, default_company="605499"
+        )
+    finally:
+        tools.build_management = original  # type: ignore[assignment]
+
+    assert result.ok is True, result
+    assert result.as_of == "2026-10-10", result
+    assert result.sources[0].id == "management:605499", result.sources
+    assert result.sources[0].url == "https://basic.10jqka.com.cn/605499/company.html", (
+        result.sources
+    )
+    directors = result.data["groups"][0]
+    assert directors["label"] == "董事会", directors
+    assert directors["salary_total_wan"] == 531.61, directors
+    leader = directors["members"][0]
+    assert leader["duties"] == ["董事长", "董事"], leader
+    assert leader["salary_wan"] == 531.61, leader
+    assert leader["hold_wan"] == 34342.26, leader
+    assert leader["hold_ratio"] == 46.8, leader
+    assert leader["resume"] == "林木勤先生…", leader
+    assert result.data["groups"][1]["members"][0]["resume"] is None, result.data
+
+
 def test_segments_region_missing() -> None:
     global REGION
     REGION = False
@@ -828,6 +891,7 @@ def main() -> None:
     test_financial_history_missing()
     test_profile_tool()
     test_segments_two_slices()
+    test_management_tool()
     test_segments_region_missing()
     test_announcements_sources()
     test_valuation()
