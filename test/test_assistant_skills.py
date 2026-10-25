@@ -81,7 +81,8 @@ def test_growth_outlook_skill() -> None:
     for phrase in ("市场空间", "渗透率", "份额", "再投资", "资本开支",
                    "固定资产", "在建工程", "cashflow_detail", "资料不足",
                    "get_segments", "history", "线性外推", "get_peers", "同业",
-                   "get_earnings_forecasts", "业绩预告"):
+                   "get_earnings_forecasts", "业绩预告",
+                   "get_analyst_views", "一致预期", "卖方"):
         assert phrase in text, phrase
     assert "不要用过去几年的增速外推未来" in text
     assert "不要编数字" in text
@@ -99,6 +100,7 @@ def test_management_skill() -> None:
                    "回购计划", "注销", "薪酬", "持股", "股东户数",
                    "get_lockup_expiries", "限售解禁", "解禁不等于减持",
                    "get_institutional_research", "机构调研", "调研纪要",
+                   "get_research_notes", "关键词", "调研问答",
                    "红旗"):
         assert phrase in text, phrase
     assert "标题不等于事实" in text
@@ -113,7 +115,8 @@ def test_valuation_skill() -> None:
     for phrase in ("PE", "PB", "分位", "自由现金流", "DCF", "目标价",
                    "每股收益", "隐含", "资料不足", "get_valuation",
                    "get_peers", "同业", "rank", "get_dividends", "分红率",
-                   "get_buybacks", "注销", "股息率"):
+                   "get_buybacks", "注销", "股息率",
+                   "get_analyst_views", "一致预期"):
         assert phrase in text, phrase
     assert "不给单一精确目标价" in text
     assert "不要输出 DCF 数字" in text

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from contextlib import closing
 from datetime import date, datetime, timedelta
@@ -31,16 +32,26 @@ PAGE_URL = "https://data.eastmoney.com/jgdy/"
 SOURCE_LABEL = "东方财富 机构调研"
 
 TABLE = "company_research"
+NOTES_TABLE = "research_notes"
 
 DEFAULT_CACHE_HOURS = 24
+NOTE_CACHE_HOURS = 24 * 30
 DEFAULT_YEARS = 3
 MAX_YEARS = 10
 MAX_EVENTS = 20
 MAX_INSTITUTIONS = 20
 MAX_CONTENT_CHARS = 4000
+MAX_NOTE_CHARS = 20_000
 CONTENT_EXCERPT = 200
 PAGE_SIZE = 80
 MAX_PAGES = 30
+
+DEFAULT_NOTE_EVENTS = 3
+MAX_NOTE_EVENTS = 10
+MAX_QUESTIONS = 10
+MAX_MATCHES = 5
+MATCH_CLIP = 800
+LEAD_CLIP = 300
 
 
 class ResearchError(Exception):
@@ -193,6 +204,49 @@ def ensure_research(
     return {"data": _cached_row(code, years) or data, "stale": False}
 
 
+def fetch_note(
+    code: str,
+    notice_date: str,
+    receive_date: str | None = None,
+) -> str | None:
+    """抓取一场调研的问答原文。"""
+    code = normalize_stock_code(code)
+    if not code or not notice_date:
+        return None
+    content = _request_content(code, notice_date, receive_date or notice_date)
+    return _clip_text(content, MAX_NOTE_CHARS)
+
+
+def ensure_note(
+    code: str,
+    notice_date: str | None,
+    receive_date: str | None = None,
+    max_age_hours: float = NOTE_CACHE_HOURS,
+    force: bool = False,
+) -> str | None:
+    """按活动读取纪要原文，缓存命中就不再抓取。
+
+    纪要发布后基本不再变化，缓存保留 30 天；抓取失败时回退旧缓存。
+    """
+    code = normalize_stock_code(code)
+    if not code or not notice_date:
+        return None
+    key = f"{receive_date or notice_date}|{notice_date}"
+
+    cached = _cached_note(code, key)
+    if (
+        cached and not force
+        and _age_hours(cached.get("fetched_at")) <= max_age_hours
+    ):
+        return cached.get("content")
+
+    content = fetch_note(code, notice_date, receive_date)
+    if content:
+        _save_note(code, key, content)
+        return content
+    return cached.get("content") if cached else None
+
+
 def build_research(
     code: str,
     years: int = DEFAULT_YEARS,
@@ -236,6 +290,156 @@ def build_research(
         as_of=data.get("as_of"),
     )
     return data
+
+
+def build_research_notes(
+    code: str,
+    keyword: str | list[str] | None = None,
+    events: int = DEFAULT_NOTE_EVENTS,
+    years: int = DEFAULT_YEARS,
+    today: str | None = None,
+    max_age_hours: float = NOTE_CACHE_HOURS,
+    force: bool = False,
+) -> dict:
+    """最近几场调研的问答正文，可按关键词筛选。
+
+    纪要原文按活动缓存在 ``research_notes`` 表里，同一场不会重复抓取。
+    """
+    code = normalize_stock_code(code)
+    if not code:
+        raise ResearchError("请输入股票代码")
+    years = _window_years(years)
+    try:
+        limit = min(max(int(events), 1), MAX_NOTE_EVENTS)
+    except (TypeError, ValueError):
+        limit = DEFAULT_NOTE_EVENTS
+
+    base = build_research(code, years=years, today=today)
+    selected = (base.get("events") or [])[:limit]
+    keywords = _keywords(keyword)
+
+    rows = []
+    for event in selected:
+        content = ensure_note(
+            code,
+            event.get("notice_date"),
+            event.get("date"),
+            max_age_hours=max_age_hours,
+            force=force,
+        )
+        item = {
+            "key": event.get("key"),
+            "date": event.get("date"),
+            "notice_date": event.get("notice_date"),
+            "place": event.get("place"),
+            "ways": event.get("ways") or [],
+            "receptionists": event.get("receptionists") or [],
+            "institution_count": event.get("institution_count"),
+            "disclosed_count": event.get("disclosed_count"),
+            "has_note": bool(content),
+            "questions": [],
+            "matches": [],
+            "lead": None,
+        }
+        if content:
+            item["questions"] = _questions(content, MAX_QUESTIONS)
+            if keywords:
+                item["matches"] = _matches(
+                    content, keywords, MAX_MATCHES
+                )
+            else:
+                item["lead"] = _excerpt(content, LEAD_CLIP)
+        rows.append(item)
+
+    matched = sum(len(item["matches"]) for item in rows)
+    notes = [
+        "问答由公司整理披露，回答可能经过筛选，不代表承诺",
+        "关键词是字符串匹配，同义表述可能漏掉",
+        f"只检索最近 {len(rows)} 场已披露的纪要",
+    ]
+    if not any(item["has_note"] for item in rows):
+        notes = ["最近几场没有取到纪要原文，可能公司未披露全文"]
+
+    data = {
+        "available": True,
+        "code": code,
+        "name": base.get("name"),
+        "as_of": base.get("as_of"),
+        "years": years,
+        "keywords": keywords,
+        "events": rows,
+        "matched": matched,
+        "counts": {
+            "events": len(rows),
+            "events_with_notes": sum(
+                1 for item in rows if item["has_note"]
+            ),
+            "matched": matched,
+        },
+        "notes": notes,
+        "sources": base.get("sources") or {SOURCE_LABEL: base.get("as_of")},
+        "url": base.get("url") or PAGE_URL,
+        "fetched_at": base.get("fetched_at") or "",
+        "stale": base.get("stale", False),
+    }
+    data["summary"] = format_research_notes(
+        data,
+        code=code,
+        name=base.get("name"),
+        as_of=base.get("as_of"),
+    )
+    return data
+
+
+def format_research_notes(
+    data: dict,
+    code: str | None = None,
+    name: str | None = None,
+    as_of: str | None = None,
+) -> str:
+    """渲染成可读文本：最近几场的提问，命中关键词时给出原文片段。"""
+    code = code or data.get("code")
+    years = data.get("years") or DEFAULT_YEARS
+    title = f"{name}({code})" if name else (code or "机构调研问答")
+
+    parts = [title, f"机构调研问答近{years}年"]
+    if as_of:
+        parts.append(f"数据截至 {as_of}")
+    lines = [" · ".join(parts)]
+
+    keywords = data.get("keywords") or []
+    counts = data.get("counts") or {}
+    if keywords:
+        lines.append(f"关键词：{'、'.join(keywords)}")
+    text = (
+        f"最近 {counts.get('events', 0)} 场："
+        f"{counts.get('events_with_notes', 0)} 场有纪要"
+    )
+    if keywords:
+        text += f" / 命中 {counts.get('matched', 0)} 段"
+    lines.append(text)
+
+    for event in data.get("events") or []:
+        head = f"{event.get('date')}"
+        if event.get("place"):
+            head += f" {event['place']}"
+        head += f"（{event.get('institution_count')} 家）"
+        lines.append(head)
+        if event.get("matches"):
+            for match in event["matches"][:2]:
+                lines.append(f"  {match.get('text')}")
+        elif event.get("questions"):
+            for question in event["questions"][:3]:
+                lines.append(f"  问：{question}")
+        elif event.get("lead"):
+            lines.append(f"  {event['lead']}")
+        else:
+            lines.append("  未取到纪要原文")
+
+    if data.get("notes"):
+        lines.append("提示：" + "；".join(data["notes"][:3]))
+    lines.append(f"数据来源：{SOURCE_LABEL}")
+    return "\n".join(lines)
 
 
 def format_research(
@@ -331,6 +535,7 @@ def _group(rows: list[dict]) -> list[dict]:
         event = groups.get(key)
         if event is None:
             event = {
+                "key": f"{event_date}|{notice_date}|{row.get('place') or ''}",
                 "date": event_date,
                 "notice_date": notice_date,
                 "place": row.get("place"),
@@ -662,6 +867,47 @@ def _save_row(code: str, years: int, data: dict) -> None:
             )
 
 
+def _ensure_notes_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        f"""
+        create table if not exists {NOTES_TABLE} (
+            code text not null,
+            note_key text not null,
+            content text,
+            fetched_at text,
+            primary key (code, note_key)
+        )
+        """
+    )
+
+
+def _cached_note(code: str, key: str) -> dict | None:
+    with closing(_connect()) as conn:
+        with conn:
+            _ensure_notes_table(conn)
+        row = conn.execute(
+            f"select * from {NOTES_TABLE} where code = ? and note_key = ?",
+            (code, key),
+        ).fetchone()
+    if row is None or not row["content"]:
+        return None
+    return {"content": row["content"], "fetched_at": row["fetched_at"]}
+
+
+def _save_note(code: str, key: str, content: str) -> None:
+    with closing(_connect()) as conn:
+        with conn:
+            _ensure_notes_table(conn)
+            conn.execute(
+                f"""
+                insert or replace into {NOTES_TABLE}
+                    (code, note_key, content, fetched_at)
+                values (?, ?, ?, ?)
+                """,
+                (code, key, content, _now()),
+            )
+
+
 def _age_hours(fetched_at: str | None) -> float:
     if not fetched_at:
         return float("inf")
@@ -766,6 +1012,89 @@ def _institution_text(event: dict) -> str:
     if total > len(shown):
         text += f" 等 {total} 家"
     return text
+
+
+def _keywords(value) -> list[str]:
+    """把关键词参数拆成列表；支持中英文逗号、顿号、分号与空格。"""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        parts = [str(item) for item in value]
+    else:
+        parts = re.split(r"[,，、;；\s]+", str(value))
+    items = []
+    for part in parts:
+        text = part.strip()
+        if text and text not in items:
+            items.append(text)
+    return items[:10]
+
+
+def _split_blocks(content: str) -> list[str]:
+    """把纪要拆成问答块；没有“问：”标记时退化为段落。"""
+    text = content.replace("\r\n", "\n").replace("\r", "\n")
+    blocks = [
+        block.strip()
+        for block in re.split(r"(?=问\s*[：:])", text)
+        if block.strip()
+    ]
+    if len(blocks) <= 1:
+        blocks = [
+            block.strip()
+            for block in re.split(r"\n\s*\n", text)
+            if block.strip()
+        ]
+    return blocks
+
+
+def _question_of(block: str) -> str | None:
+    match = re.match(
+        r"问\s*[：:]\s*(.*?)(?=答\s*[：:]|\Z)", block, re.S
+    )
+    if not match:
+        return None
+    text = _one_line(match.group(1))
+    return text[:200] if text else None
+
+
+def _questions(content: str, limit: int) -> list[str]:
+    items = []
+    for block in _split_blocks(content):
+        question = _question_of(block)
+        if question and question not in items:
+            items.append(question)
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _matches(
+    content: str,
+    keywords: list[str],
+    limit: int,
+) -> list[dict]:
+    matches = []
+    folded = [keyword.casefold() for keyword in keywords]
+    for block in _split_blocks(content):
+        text = _one_line(block)
+        lowered = text.casefold()
+        if not any(keyword in lowered for keyword in folded):
+            continue
+        clipped = (
+            text if len(text) <= MATCH_CLIP
+            else text[:MATCH_CLIP] + "…"
+        )
+        matches.append({
+            "question": _question_of(block),
+            "text": clipped,
+        })
+        if len(matches) >= limit:
+            break
+    return matches
+
+
+def _one_line(text: str) -> str:
+    return " ".join((text or "").split())
 
 
 def _now() -> str:

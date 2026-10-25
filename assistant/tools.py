@@ -13,6 +13,7 @@ from __future__ import annotations
 import copy
 import math
 
+from stock.analyst_views import build_analyst_views
 from stock.announcements import build_announcements
 from stock.buybacks import build_buybacks
 from stock.db_service import get_all_stocks, get_stock, get_stock_by_name
@@ -31,7 +32,7 @@ from stock.insider_trades import PAGE_URL as INSIDER_URL
 from stock.insider_trades import build_insider_trades
 from stock.lockups import build_lockups
 from stock.pledges import build_pledges
-from stock.research import build_research
+from stock.research import build_research, build_research_notes
 from stock.management import PAGE_URL as MANAGEMENT_URL
 from stock.management import build_management
 from stock.peers import build_peers
@@ -398,6 +399,58 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "get_research_notes",
+            "description": (
+                "机构调研问答：最近 N 场调研纪要里的提问，可按关键词"
+                "（如毛利率、产能、竞争、分红）筛选并返回问答片段；"
+                "纪要由公司整理披露，回答不代表承诺"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword": {
+                        "type": "string",
+                        "description": "关键词，多个用逗号或空格分隔；省略则返回提问列表",
+                    },
+                    "events": {
+                        "type": "integer",
+                        "description": "最近几场，1-10，默认 3",
+                    },
+                    "years": {
+                        "type": "integer",
+                        "description": "回看年数，1-10，默认 3",
+                    },
+                    "company": _COMPANY,
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_analyst_views",
+            "description": (
+                "卖方研报观点：近 N 天研报数量、覆盖机构、评级分布、"
+                "目标价区间、未来两年一致预期 EPS 与最新报告标题；"
+                "卖方观点带乐观倾向，评级与目标价不是事实"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days": {
+                        "type": "integer",
+                        "description": "回看天数，30-730，默认 365",
+                    },
+                    "company": _COMPANY,
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_announcements",
             "description": "近期公告：带标签的事件（回购、减持、重大合同等）",
             "parameters": {
@@ -601,6 +654,10 @@ def run_tool(
             return _earnings_forecasts(code, arguments)
         if name == "get_institutional_research":
             return _institutional_research(code, arguments)
+        if name == "get_research_notes":
+            return _research_notes(code, arguments)
+        if name == "get_analyst_views":
+            return _analyst_views(code, arguments)
         if name == "get_announcements":
             return _announcements(code, arguments)
         if name == "get_valuation":
@@ -1469,6 +1526,117 @@ def _institutional_research(code: str, arguments: dict) -> ToolResult:
     )
 
 
+def _research_notes(code: str, arguments: dict) -> ToolResult:
+    try:
+        years = int(arguments.get("years", 3))
+    except (TypeError, ValueError):
+        years = 3
+    years = min(max(years, 1), 10)
+    try:
+        events = int(arguments.get("events", 3))
+    except (TypeError, ValueError):
+        events = 3
+    events = min(max(events, 1), 10)
+    keyword = arguments.get("keyword")
+
+    data = build_research_notes(
+        code, keyword=keyword, events=events, years=years
+    )
+    name = data.get("name")
+    as_of = data.get("as_of") or ""
+    source = Source(
+        id=f"research-notes:{code}:{as_of}" if as_of else f"research-notes:{code}",
+        label="调研问答",
+        detail=f"{name or code} 调研问答 {as_of}".strip(),
+        as_of=as_of,
+        fetched_at=data.get("fetched_at") or "",
+        url=data.get("url") or "",
+    )
+    return ToolResult(
+        ok=True,
+        company=code,
+        as_of=as_of or None,
+        sources=(source,),
+        data={
+            "code": code,
+            "name": name,
+            "as_of": as_of or None,
+            "years": data.get("years", years),
+            "keywords": data.get("keywords") or [],
+            "events": [
+                {
+                    "date": item.get("date"),
+                    "notice_date": item.get("notice_date"),
+                    "place": item.get("place"),
+                    "institution_count": item.get("institution_count"),
+                    "has_note": item.get("has_note", False),
+                    "questions": item.get("questions") or [],
+                    "matches": item.get("matches") or [],
+                    "lead": item.get("lead"),
+                }
+                for item in data.get("events") or []
+            ],
+            "matched": data.get("matched", 0),
+            "counts": data.get("counts") or {},
+            "notes": data.get("notes") or [],
+            "stale": data.get("stale", False),
+        },
+    )
+
+
+def _analyst_views(code: str, arguments: dict) -> ToolResult:
+    try:
+        days = int(arguments.get("days", 365))
+    except (TypeError, ValueError):
+        days = 365
+    days = min(max(days, 30), 730)
+
+    data = build_analyst_views(code, days=days)
+    reports = [
+        _report_row(item) for item in data.get("reports") or []
+    ]
+    latest = (
+        _report_row(data["latest"]) if data.get("latest") else None
+    )
+    latest_by_org = [
+        _report_row(item) for item in data.get("latest_by_org") or []
+    ]
+
+    name = data.get("name")
+    as_of = data.get("as_of") or ""
+    source = Source(
+        id=f"analyst:{code}:{as_of}" if as_of else f"analyst:{code}",
+        label="研报观点",
+        detail=f"{name or code} 卖方研报 {as_of}".strip(),
+        as_of=as_of,
+        fetched_at=data.get("fetched_at") or "",
+        url=data.get("url") or "",
+    )
+    return ToolResult(
+        ok=True,
+        company=code,
+        as_of=as_of or None,
+        sources=(source,),
+        data={
+            "code": code,
+            "name": name,
+            "as_of": as_of or None,
+            "window_start": data.get("window_start"),
+            "window_end": data.get("window_end"),
+            "days": data.get("days", days),
+            "has_reports": data.get("has_reports", False),
+            "latest": latest,
+            "reports": reports,
+            "latest_by_org": latest_by_org,
+            "reports_truncated": data.get("reports_truncated", 0),
+            "rows_truncated": data.get("truncated", False),
+            "counts": _analyst_counts(data.get("counts") or {}),
+            "notes": data.get("notes") or [],
+            "stale": data.get("stale", False),
+        },
+    )
+
+
 def _announcements(code: str, arguments: dict) -> ToolResult:
     try:
         days = int(arguments.get("days") or 180)
@@ -2268,6 +2436,57 @@ def _research_counts(item: dict) -> dict:
         "latest_place": item.get("latest_place"),
         "events_12m": item.get("events_12m", 0),
         "institution_visits_12m": item.get("institution_visits_12m", 0),
+    }
+
+
+def _report_row(item: dict) -> dict:
+    """一篇研报：机构、分析师、评级、目标价与 EPS 预测。"""
+    item = item or {}
+    return {
+        "publish_date": item.get("publish_date"),
+        "year": item.get("year"),
+        "org": item.get("org"),
+        "researcher": item.get("researcher"),
+        "title": _clip(item.get("title") or "", 80) or None,
+        "rating": item.get("rating"),
+        "last_rating": item.get("last_rating"),
+        "rating_changed": item.get("rating_changed", False),
+        "target_price": _round(item.get("target_price"), 2),
+        "eps_this_year": _round(item.get("eps_this_year"), 4),
+        "eps_next_year": _round(item.get("eps_next_year"), 4),
+        "eps_next2_year": _round(item.get("eps_next2_year"), 4),
+        "pe_this_year": _round(item.get("pe_this_year"), 2),
+        "url": item.get("url"),
+    }
+
+
+def _analyst_counts(item: dict) -> dict:
+    """研报总览：评级分布、目标价区间与一致预期。"""
+    item = item or {}
+
+    def consensus(key: str) -> dict:
+        value = item.get(key) or {}
+        return {
+            "year": value.get("year"),
+            "eps": _round(value.get("eps"), 4),
+            "orgs": value.get("orgs", 0),
+        }
+
+    return {
+        "reports": item.get("reports", 0),
+        "orgs": item.get("orgs", 0),
+        "latest_date": item.get("latest_date"),
+        "ratings": [
+            {"rating": row.get("rating"), "reports": row.get("reports")}
+            for row in item.get("ratings") or []
+        ],
+        "rating_changes": item.get("rating_changes", 0),
+        "target_price_orgs": item.get("target_price_orgs", 0),
+        "target_price_low": _round(item.get("target_price_low"), 2),
+        "target_price_high": _round(item.get("target_price_high"), 2),
+        "target_price_median": _round(item.get("target_price_median"), 2),
+        "consensus_current_year": consensus("consensus_current_year"),
+        "consensus_next_year": consensus("consensus_next_year"),
     }
 
 

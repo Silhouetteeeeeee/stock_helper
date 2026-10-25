@@ -333,6 +333,145 @@ def test_build() -> None:
     assert data["truncated"] is False, data
 
 
+NOTE = (
+    "投资者关系活动主要内容介绍\n\n"
+    "问：上半年毛利率变化的原因？\n答：产品结构改善，毛利率提升 2 个百分点。\n\n"
+    "问：产能规划与资本开支？\n答：明年新增两条产线。\n\n"
+    "问：分红政策会不会调整？\n答：保持稳定。"
+)
+
+
+def test_note_helpers() -> None:
+    assert research._keywords("毛利率,产能；分红 现金流") == [
+        "毛利率", "产能", "分红", "现金流",
+    ], research._keywords("毛利率,产能；分红 现金流")
+    assert research._keywords(None) == [], research._keywords(None)
+
+    questions = research._questions(NOTE, 10)
+    assert questions == [
+        "上半年毛利率变化的原因？",
+        "产能规划与资本开支？",
+        "分红政策会不会调整？",
+    ], questions
+
+    matches = research._matches(NOTE, ["毛利率"], 5)
+    assert len(matches) == 1, matches
+    assert matches[0]["question"] == "上半年毛利率变化的原因？", matches
+    assert "毛利率提升" in matches[0]["text"], matches
+
+    none = research._matches(NOTE, ["海外"], 5)
+    assert none == [], none
+
+
+def test_build_notes() -> None:
+    base = research.research_from_rows(ROWS, CODE, years=3, today=TODAY)
+    original_build = research.build_research
+    original_note = research.ensure_note
+    calls = []
+
+    research.build_research = lambda code, **kwargs: base  # type: ignore[assignment]
+
+    def fake_note(code, notice, receive=None, **kwargs):
+        calls.append((notice, receive))
+        return NOTE if notice == "2026-08-23" else None
+
+    research.ensure_note = fake_note  # type: ignore[assignment]
+    try:
+        data = research.build_research_notes(
+            CODE, keyword="毛利率", events=2, today=TODAY,
+        )
+    finally:
+        research.build_research = original_build  # type: ignore[assignment]
+        research.ensure_note = original_note  # type: ignore[assignment]
+
+    assert data["code"] == CODE, data
+    assert data["keywords"] == ["毛利率"], data
+    assert data["counts"] == {
+        "events": 2, "events_with_notes": 1, "matched": 1,
+    }, data["counts"]
+    assert len(calls) == 2, calls
+
+    first, second = data["events"]
+    assert first["has_note"] is True, first
+    assert first["matches"][0]["question"] == "上半年毛利率变化的原因？", first
+    assert second["has_note"] is False, second
+    assert second["matches"] == [], second
+
+    assert "关键词：毛利率" in data["summary"], data["summary"]
+    assert "命中 1 段" in data["summary"], data["summary"]
+    assert "上半年毛利率变化的原因" in data["summary"], data["summary"]
+
+
+def test_build_notes_without_keyword() -> None:
+    base = research.research_from_rows(ROWS, CODE, years=3, today=TODAY)
+    original_build = research.build_research
+    original_note = research.ensure_note
+    research.build_research = lambda code, **kwargs: base  # type: ignore[assignment]
+    research.ensure_note = (  # type: ignore[assignment]
+        lambda code, notice, receive=None, **kwargs: NOTE
+    )
+    try:
+        data = research.build_research_notes(
+            CODE, events=1, today=TODAY,
+        )
+    finally:
+        research.build_research = original_build  # type: ignore[assignment]
+        research.ensure_note = original_note  # type: ignore[assignment]
+
+    event = data["events"][0]
+    assert data["keywords"] == [], data
+    assert event["matches"] == [], event
+    assert len(event["questions"]) == 3, event
+    assert event["lead"].startswith("投资者关系活动主要内容介绍"), event
+    assert "最近 1 场：1 场有纪要" in data["summary"], data["summary"]
+
+
+def test_note_cache() -> None:
+    tmpdir = tempfile.mkdtemp(prefix="research_note_")
+    research.DB_PATH = os.path.join(tmpdir, "stock.db")
+
+    calls = {"fetch": 0}
+
+    def fake_fetch(code, notice, receive=None):
+        calls["fetch"] += 1
+        return NOTE
+
+    original = research.fetch_note
+    research.fetch_note = fake_fetch  # type: ignore[assignment]
+    try:
+        first = research.ensure_note(CODE, "2026-08-23", "2026-08-21")
+        assert first == NOTE, first
+        assert calls["fetch"] == 1, calls
+
+        second = research.ensure_note(CODE, "2026-08-23", "2026-08-21")
+        assert second == NOTE, second
+        assert calls["fetch"] == 1, calls
+
+        research.ensure_note(
+            CODE, "2026-08-23", "2026-08-21", force=True
+        )
+        assert calls["fetch"] == 2, calls
+
+        original_age = research._age_hours
+        research._age_hours = lambda fetched_at: 999.0  # type: ignore[assignment]
+        research.ensure_note(CODE, "2026-08-23", "2026-08-21")
+        assert calls["fetch"] == 3, calls
+        research._age_hours = original_age  # type: ignore[assignment]
+
+        def broken(code, notice, receive=None):
+            return None
+
+        research.fetch_note = broken  # type: ignore[assignment]
+        stale = research.ensure_note(
+            CODE, "2026-08-23", "2026-08-21", force=True
+        )
+        assert stale == NOTE, stale
+    finally:
+        research.fetch_note = original  # type: ignore[assignment]
+
+    assert research.ensure_note(CODE, None) is None
+
+
 def test_page_url() -> None:
     assert research.PAGE_URL == "https://data.eastmoney.com/jgdy/"
 
@@ -346,6 +485,10 @@ def main() -> None:
     test_format()
     test_cache()
     test_build()
+    test_note_helpers()
+    test_build_notes()
+    test_build_notes_without_keyword()
+    test_note_cache()
     test_page_url()
     print("PASS")
     sys.stdout.flush()

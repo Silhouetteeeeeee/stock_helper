@@ -149,6 +149,7 @@ def test_schemas() -> None:
         "get_shareholders", "get_peers", "get_dividends", "get_insider_trades",
         "get_buybacks", "get_lockup_expiries", "get_pledges",
         "get_earnings_forecasts", "get_institutional_research",
+        "get_research_notes", "get_analyst_views",
         "get_announcements", "get_valuation", "calc_valuation",
     ], names
     for item in tools.schemas():
@@ -1385,6 +1386,140 @@ def test_institutional_research_tool() -> None:
     assert result.data["notes"] == ["调研热度不等于基本面"], result.data
 
 
+def test_research_notes_tool() -> None:
+    data = {
+        "code": "002230", "name": "科大讯飞", "as_of": "2026-08-23",
+        "years": 3, "keywords": ["毛利率"], "matched": 1,
+        "events": [{
+            "date": "2026-08-21", "notice_date": "2026-08-23",
+            "place": "合肥总部", "institution_count": 43,
+            "has_note": True, "questions": ["毛利率变化的原因？"],
+            "matches": [{
+                "question": "毛利率变化的原因？",
+                "text": "问：毛利率变化的原因？ 答：产品结构改善。",
+            }],
+            "lead": None,
+        }],
+        "counts": {"events": 1, "events_with_notes": 1, "matched": 1},
+        "notes": ["问答可能经过筛选"],
+        "url": "https://data.eastmoney.com/jgdy/",
+        "fetched_at": "2026-10-25 10:00:00", "stale": False,
+    }
+    captured = {}
+
+    def fake_build(code: str, **kwargs) -> dict:
+        captured.update(kwargs)
+        return data
+
+    original = tools.build_research_notes
+    tools.build_research_notes = fake_build  # type: ignore[assignment]
+    try:
+        result = tools.run_tool(
+            "get_research_notes",
+            {"keyword": "毛利率", "events": 99, "years": 99},
+            default_company="002230",
+        )
+    finally:
+        tools.build_research_notes = original  # type: ignore[assignment]
+
+    assert captured["keyword"] == "毛利率", captured
+    assert captured["events"] == 10, captured
+    assert captured["years"] == 10, captured
+    assert result.ok is True, result
+    assert result.as_of == "2026-08-23", result
+    assert result.sources[0].id == "research-notes:002230:2026-08-23", result.sources
+    assert result.sources[0].label == "调研问答", result.sources
+
+    event = result.data["events"][0]
+    assert event["has_note"] is True, event
+    assert event["matches"][0]["text"].startswith("问：毛利率"), event
+    assert result.data["matched"] == 1, result.data
+    assert result.data["counts"]["matched"] == 1, result.data
+    assert result.data["keywords"] == ["毛利率"], result.data
+    assert result.data["notes"] == ["问答可能经过筛选"], result.data
+
+
+def test_analyst_views_tool() -> None:
+    report = {
+        "publish_date": "2026-08-20", "year": 2026,
+        "org": "中信证券", "researcher": "张三",
+        "title": "AI 商业化加速", "rating": "买入",
+        "last_rating": "买入", "rating_changed": False,
+        "target_price": 100.0,
+        "eps_this_year": 3.0, "eps_next_year": 3.5,
+        "eps_next2_year": 4.0, "pe_this_year": 33.3,
+        "url": "https://data.eastmoney.com/report/info/AP1.html",
+    }
+    counts = {
+        "reports": 5, "orgs": 4, "latest_date": "2026-08-20",
+        "ratings": [
+            {"rating": "买入", "reports": 3},
+            {"rating": "持有", "reports": 1},
+        ],
+        "rating_changes": 1, "target_price_orgs": 2,
+        "target_price_low": 90.0, "target_price_high": 100.0,
+        "target_price_median": 95.0,
+        "consensus_current_year": {"year": 2026, "eps": 3.0, "orgs": 3},
+        "consensus_next_year": {"year": 2027, "eps": 3.5, "orgs": 3},
+    }
+    data = {
+        "code": "002230", "name": "科大讯飞", "as_of": "2026-08-20",
+        "window_start": "2025-10-25", "window_end": "2026-10-25",
+        "days": 365, "has_reports": True,
+        "latest": report, "reports": [report],
+        "latest_by_org": [report], "reports_truncated": 0,
+        "truncated": False, "counts": counts,
+        "notes": ["卖方研报带乐观倾向"],
+        "url": "https://data.eastmoney.com/report/stock.jshtml?stockcode=002230",
+        "fetched_at": "2026-10-25 10:00:00", "stale": False,
+    }
+    captured = {}
+
+    def fake_build(code: str, **kwargs) -> dict:
+        captured.update(kwargs)
+        return data
+
+    original = tools.build_analyst_views
+    tools.build_analyst_views = fake_build  # type: ignore[assignment]
+    try:
+        result = tools.run_tool(
+            "get_analyst_views", {"days": 9999},
+            default_company="002230",
+        )
+    finally:
+        tools.build_analyst_views = original  # type: ignore[assignment]
+
+    assert captured["days"] == 730, captured
+    assert result.ok is True, result
+    assert result.as_of == "2026-08-20", result
+    assert result.sources[0].id == "analyst:002230:2026-08-20", result.sources
+    assert result.sources[0].label == "研报观点", result.sources
+    assert result.sources[0].url == (
+        "https://data.eastmoney.com/report/stock.jshtml?stockcode=002230"
+    ), result.sources
+
+    row = result.data["latest"]
+    assert row["org"] == "中信证券", row
+    assert row["rating"] == "买入", row
+    assert row["target_price"] == 100.0, row
+    assert row["eps_this_year"] == 3.0, row
+
+    data_counts = result.data["counts"]
+    assert data_counts["reports"] == 5, data_counts
+    assert data_counts["ratings"] == [
+        {"rating": "买入", "reports": 3},
+        {"rating": "持有", "reports": 1},
+    ], data_counts
+    assert data_counts["target_price_median"] == 95.0, data_counts
+    assert data_counts["consensus_current_year"] == {
+        "year": 2026, "eps": 3.0, "orgs": 3,
+    }, data_counts
+    assert data_counts["consensus_next_year"] == {
+        "year": 2027, "eps": 3.5, "orgs": 3,
+    }, data_counts
+    assert result.data["notes"] == ["卖方研报带乐观倾向"], result.data
+
+
 def test_segments_region_missing() -> None:
     global REGION
     REGION = False
@@ -1735,6 +1870,8 @@ def main() -> None:
     test_pledges_tool()
     test_earnings_forecasts_tool()
     test_institutional_research_tool()
+    test_research_notes_tool()
+    test_analyst_views_tool()
     test_segments_region_missing()
     test_announcements_sources()
     test_valuation()
