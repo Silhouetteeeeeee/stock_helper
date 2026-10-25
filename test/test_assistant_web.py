@@ -188,22 +188,26 @@ def _clear_store() -> None:
 def test_webapp_flow() -> None:
     if AppTest is None:
         return
-    write_selection("605499", "东鹏饮料")
-
     at = _app()
     at.run()
     assert not at.exception, list(at.exception)
-    # 标题就写明在聊哪家公司，正文不再另起一行“当前：…”
-    assert [title.value for title in at.title] == ["投资助手 · 东鹏饮料"]
-    assert at.session_state["active_code"] == "605499"
+    # 行情窗口选了什么都不影响页面：没有对话时不指定公司
+    write_selection("605499", "东鹏饮料")
+    at.run()
+    assert at.session_state["active_code"] is None
+    assert [title.value for title in at.title] == ["投资助手"]
 
-    # 首次运行后再注入假模型：切公司会重置会话
+    # 模拟已经在聊东鹏，再注入假模型（首次运行之后的注入不会被切公司清掉）
+    at.session_state["active_code"] = "605499"
+    at.session_state["active_name"] = "东鹏饮料"
     agent = _FakeAgent()
     at.session_state["agent"] = agent
     at.session_state["agent_code"] = "605499"
     at.chat_input[0].set_value("毛利率为什么下滑").run()
     assert not at.exception, list(at.exception)
     assert agent.asked == ["毛利率为什么下滑"], agent.asked
+    # 标题就写明在聊哪家公司，正文不再另起一行“当前：…”
+    assert [title.value for title in at.title] == ["投资助手 · 东鹏饮料"]
 
     messages = at.session_state["messages"]
     assert [message["role"] for message in messages] == ["user", "assistant"]
@@ -249,7 +253,6 @@ def test_webapp_resume_and_delete() -> None:
     if AppTest is None:
         return
     _clear_store()
-    write_selection("600519", "贵州茅台")
 
     store = ConversationStore()
     conversation_id = store.create(
@@ -263,6 +266,9 @@ def test_webapp_resume_and_delete() -> None:
         "issues": [],
         "raw": [],
     })
+    # 另一家公司的对话也要留在左侧，不因为当前聊的是谁而消失
+    other_id = store.create(build_title("紫金矿业", "分红怎么样"), "601899", "紫金矿业")
+    store.append(other_id, "user", {"text": "分红怎么样"})
 
     at = _app()
     at.run()
@@ -284,6 +290,9 @@ def test_webapp_resume_and_delete() -> None:
     ), markdown
     # 旧数据只存了次数，不能因此报错
     assert any("研究过程：2 次取数" in item.value for item in at.caption)
+    # 当前聊茅台，紫金的对话仍在左侧
+    labels = [button.label for button in at.button]
+    assert any(label.startswith("紫金矿业 · 分红怎么样") for label in labels), labels
 
     _button(at, "删除当前对话").click().run()
     assert not at.exception, list(at.exception)
@@ -297,14 +306,13 @@ def test_webapp_mentions_company() -> None:
     if AppTest is None:
         return
     _clear_store()
-    write_selection("sh000001", "上证指数", is_index=True)
 
     from assistant import agent as agent_module
 
     at = _app()
     at.run()
     assert not at.exception, list(at.exception)
-    # 行情窗口停在指数上：没有对话就先不聊公司，标题也不带公司
+    # 还没聊公司：标题不带公司
     assert at.session_state["active_code"] is None
     assert [title.value for title in at.title] == ["投资助手"]
     assert any("带上公司名或代码" in item.value for item in at.info)

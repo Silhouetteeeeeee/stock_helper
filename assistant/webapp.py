@@ -1,9 +1,8 @@
 """投资助手 Web 页面（Streamlit）。
 
-独立进程运行，由行情窗口的 AI 按钮启动。当前标的不走网络接口，
-而是读 ``data/assistant_state.json``：行情窗口每次切换标的都会更新，
-页面在每次交互时重新读取。模型与工具复用 ``assistant`` 包，API key
-只留在服务端，浏览器拿不到。
+独立进程运行，由行情窗口的 AI 按钮启动。页面不跟随行情窗口：聊哪家公司
+只看对话里提到了谁，左边列出全部历史对话。模型与工具复用 ``assistant``
+包，API key 只留在服务端，浏览器拿不到。
 
 启动：``python -m streamlit run assistant/webapp.py``
 """
@@ -17,13 +16,12 @@ import streamlit as st
 from assistant.agent import ResearchAgent, build_client
 from assistant.env import load_env
 from assistant.render import citation_html, source_lines, stream_text
-from assistant.selection import read_selection
 from assistant.store import ConversationStore, build_title
 from assistant.tools import find_company_in_text
 
 WELCOME = "直接提问，提到哪家公司就聊哪家，例如「紫金矿业靠什么赚钱」「东鹏饮料毛利率为什么下滑」。回答会标注数据来源。"
 MAX_ISSUES = 2
-RECENT_LIMIT = 10
+RECENT_LIMIT = 50
 STREAM_INTERVAL = 0.08
 
 STORE = ConversationStore()
@@ -240,9 +238,6 @@ def _answer_message(answer) -> dict:
 # 页面
 # ---------------------------------------------------------------------------
 _init_state()
-selection = read_selection() or {}
-state_stock = "" if selection.get("is_index") else (selection.get("code") or "")
-state_name = (selection.get("name") or "").strip() or state_stock
 
 # 输入框固定在页面底部，位置不受调用顺序影响：先读出来，
 # 这一句提到哪家公司，标题和本轮对话就跟到哪家。
@@ -250,11 +245,6 @@ prompt = st.chat_input("问一句，如：紫金矿业靠什么赚钱？")
 mentioned = find_company_in_text(prompt) if prompt else None
 if mentioned:
     _switch_company(*mentioned)
-
-# 行情窗口只用来给一个起点：还没有对话时，默认聊窗口里那只。
-# 一旦聊起来就只听对话的，窗口换股也不打断。
-if state_stock and not st.session_state.get("active_code"):
-    _switch_company(state_stock, state_name)
 
 active_code = st.session_state.get("active_code")
 active_name = st.session_state.get("active_name") or active_code
@@ -279,7 +269,8 @@ with st.sidebar:
     query = st.text_input(
         "搜索对话", placeholder="公司、代码或标题", key="conversation_query"
     ).strip()
-    recent = STORE.recent(primary_code=active_code or None, query=query, limit=RECENT_LIMIT)
+    # 不按当前公司过滤：所有对话都留在左侧，换公司、开新对话都不会让旧记录消失
+    recent = STORE.recent(query=query, limit=RECENT_LIMIT)
     if not recent:
         st.caption("还没有保存的对话。")
     for item in recent:

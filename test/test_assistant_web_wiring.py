@@ -57,7 +57,7 @@ def test_glue(app: QApplication) -> None:
     assert opened == ["http://127.0.0.1:8501/"], opened
     assert glue.is_busy() is False
 
-    # 切换成指数也写入状态，页面据此提示没有财报数据
+    # 切换成指数也照样落盘（页面不读它，这里只验证桥接本身不出错）
     glue.set_company("sh000001", "上证指数", is_index=True)
     state = read_selection()
     assert state is not None and state["is_index"] is True
