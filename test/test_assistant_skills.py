@@ -65,7 +65,8 @@ def test_financial_safety_skill() -> None:
     text = skill.instructions
     for phrase in ("有息负债", "利息保障", "短期", "商誉", "应收账款", "存货",
                    "压力测试", "资料不足", "资产负债率", "应付账款",
-                   "合同负债", "balance_detail", "get_finance"):
+                   "合同负债", "balance_detail", "get_finance",
+                   "get_pledges", "股权质押", "质押比例"):
         assert phrase in text, phrase
     assert "不要机械套用" in text
     assert "口径不可比" in text

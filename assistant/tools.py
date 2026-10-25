@@ -29,6 +29,7 @@ from stock.finance_snapshot import (
 from stock.insider_trades import PAGE_URL as INSIDER_URL
 from stock.insider_trades import build_insider_trades
 from stock.lockups import build_lockups
+from stock.pledges import build_pledges
 from stock.management import PAGE_URL as MANAGEMENT_URL
 from stock.management import build_management
 from stock.peers import build_peers
@@ -329,6 +330,28 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "get_pledges",
+            "description": (
+                "股权质押：最新质押比例、质押股数、质押市值、笔数、"
+                "无限售/有限售质押，近一年变化、区间峰值与月度/年度趋势；"
+                "按周披露，质押比例高不等于违约"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "years": {
+                        "type": "integer",
+                        "description": "回看年数，1-10，默认 3",
+                    },
+                    "company": _COMPANY,
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_announcements",
             "description": "近期公告：带标签的事件（回购、减持、重大合同等）",
             "parameters": {
@@ -526,6 +549,8 @@ def run_tool(
             return _buybacks(code, arguments)
         if name == "get_lockup_expiries":
             return _lockup_expiries(code, arguments)
+        if name == "get_pledges":
+            return _pledges(code, arguments)
         if name == "get_announcements":
             return _announcements(code, arguments)
         if name == "get_valuation":
@@ -1224,6 +1249,51 @@ def _lockup_expiries(code: str, arguments: dict) -> ToolResult:
     )
 
 
+def _pledges(code: str, arguments: dict) -> ToolResult:
+    try:
+        years = int(arguments.get("years", 3))
+    except (TypeError, ValueError):
+        years = 3
+    years = min(max(years, 1), 10)
+
+    data = build_pledges(code, years=years)
+    series = [_pledge_point(item) for item in data.get("series") or []]
+    annual = [_pledge_year(item) for item in data.get("annual") or []]
+    latest = _pledge_point(data["latest"]) if data.get("latest") else None
+
+    name = data.get("name")
+    as_of = data.get("as_of") or ""
+    source = Source(
+        id=f"pledges:{code}:{as_of}" if as_of else f"pledges:{code}",
+        label="股权质押",
+        detail=f"{name or code} 股权质押 {as_of}".strip(),
+        as_of=as_of,
+        fetched_at=data.get("fetched_at") or "",
+        url=data.get("url") or "",
+    )
+    return ToolResult(
+        ok=True,
+        company=code,
+        as_of=as_of or None,
+        sources=(source,),
+        data={
+            "code": code,
+            "name": name,
+            "as_of": as_of or None,
+            "window_start": data.get("window_start"),
+            "window_end": data.get("window_end"),
+            "years": data.get("years", years),
+            "has_pledges": data.get("has_pledges", False),
+            "latest": latest,
+            "series": series,
+            "annual": annual,
+            "counts": _pledge_counts(data.get("counts") or {}),
+            "notes": data.get("notes") or [],
+            "stale": data.get("stale", False),
+        },
+    )
+
+
 def _announcements(code: str, arguments: dict) -> ToolResult:
     try:
         days = int(arguments.get("days") or 180)
@@ -1851,6 +1921,71 @@ def _lockup_counts(item: dict) -> dict:
         "latest_date": item.get("latest_date"),
         "latest_type": item.get("latest_type"),
         "missing_market_cap": item.get("missing_market_cap", 0),
+    }
+
+
+def _pledge_point(item: dict) -> dict:
+    """质押周度/月度一行：股数换万股，市值换亿元，比例保留两位。"""
+    item = item or {}
+    return {
+        "trade_date": item.get("trade_date"),
+        "year": item.get("year"),
+        "month": item.get("month"),
+        "ratio_pct": _round(item.get("ratio_pct"), 2),
+        "balance_shares_wan": _wan(item.get("balance_shares")),
+        "market_cap_yi": _yi(item.get("market_cap")),
+        "deal_num": item.get("deal_num"),
+        "unlimited_shares_wan": _wan(item.get("unlimited_shares")),
+        "limited_shares_wan": _wan(item.get("limited_shares")),
+        "industry": item.get("industry"),
+    }
+
+
+def _pledge_year(item: dict) -> dict:
+    """年度质押汇总：比例保留两位，股数换万股，市值换亿元。"""
+    item = item or {}
+    return {
+        "year": item.get("year"),
+        "points": item.get("points"),
+        "latest_date": item.get("latest_date"),
+        "latest_ratio_pct": _round(item.get("latest_ratio_pct"), 2),
+        "balance_shares_wan": _wan(item.get("balance_shares")),
+        "market_cap_yi": _yi(item.get("market_cap")),
+        "peak_ratio_pct": _round(item.get("peak_ratio_pct"), 2),
+        "low_ratio_pct": _round(item.get("low_ratio_pct"), 2),
+    }
+
+
+def _pledge_counts(item: dict) -> dict:
+    """质押总览：比例保留两位，股数换万股，市值换亿元。"""
+    item = item or {}
+    return {
+        "points": item.get("points", 0),
+        "latest_date": item.get("latest_date"),
+        "latest_ratio_pct": _round(item.get("latest_ratio_pct"), 2),
+        "latest_balance_shares_wan": _wan(
+            item.get("latest_balance_shares")
+        ),
+        "latest_market_cap_yi": _yi(item.get("latest_market_cap")),
+        "latest_deal_num": item.get("latest_deal_num"),
+        "latest_unlimited_shares_wan": _wan(
+            item.get("latest_unlimited_shares")
+        ),
+        "latest_limited_shares_wan": _wan(
+            item.get("latest_limited_shares")
+        ),
+        "latest_industry": item.get("latest_industry"),
+        "year_ago_date": item.get("year_ago_date"),
+        "year_ago_ratio_pct": _round(item.get("year_ago_ratio_pct"), 2),
+        "change_pp": _round(item.get("change_pp"), 2),
+        "direction": item.get("direction"),
+        "peak_ratio_pct": _round(item.get("peak_ratio_pct"), 2),
+        "peak_date": item.get("peak_date"),
+        "low_ratio_pct": _round(item.get("low_ratio_pct"), 2),
+        "low_date": item.get("low_date"),
+        "avg_ratio_pct": _round(item.get("avg_ratio_pct"), 2),
+        "high_pledge": item.get("high_pledge", False),
+        "watch_pledge": item.get("watch_pledge", False),
     }
 
 

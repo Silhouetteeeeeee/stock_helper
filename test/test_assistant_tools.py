@@ -147,7 +147,8 @@ def test_schemas() -> None:
         "load_skill", "resolve_company", "get_company_profile", "get_finance",
         "get_financial_history", "get_segments", "get_management",
         "get_shareholders", "get_peers", "get_dividends", "get_insider_trades",
-        "get_buybacks", "get_lockup_expiries", "get_announcements",
+        "get_buybacks", "get_lockup_expiries", "get_pledges",
+        "get_announcements",
         "get_valuation", "calc_valuation",
     ], names
     for item in tools.schemas():
@@ -1121,6 +1122,97 @@ def test_lockup_expiries_tool() -> None:
     assert result.data["notes"] == ["解禁不等于减持"], result.data
 
 
+def test_pledges_tool() -> None:
+    latest = {
+        "trade_date": "2026-10-23", "year": 2026, "ratio_pct": 28.5,
+        "balance_shares": 1_000_000_000, "market_cap": 5_000_000_000.0,
+        "deal_num": 5, "unlimited_shares": 1_000_000_000,
+        "limited_shares": 0, "industry": "软件开发",
+    }
+    series = {
+        "month": "2026-10", "trade_date": "2026-10-23",
+        "ratio_pct": 28.5, "balance_shares": 1_000_000_000,
+        "market_cap": 5_000_000_000.0, "deal_num": 5,
+    }
+    annual = {
+        "year": 2026, "points": 3, "latest_date": "2026-10-23",
+        "latest_ratio_pct": 28.5, "balance_shares": 1_000_000_000,
+        "market_cap": 5_000_000_000.0, "peak_ratio_pct": 35.0,
+        "low_ratio_pct": 28.5,
+    }
+    counts = {
+        "points": 6, "latest_date": "2026-10-23",
+        "latest_ratio_pct": 28.5,
+        "latest_balance_shares": 1_000_000_000,
+        "latest_market_cap": 5_000_000_000.0, "latest_deal_num": 5,
+        "latest_unlimited_shares": 1_000_000_000,
+        "latest_limited_shares": 0, "latest_industry": "软件开发",
+        "year_ago_date": "2025-10-24", "year_ago_ratio_pct": 31.0,
+        "change_pp": -2.5, "direction": "下降", "peak_ratio_pct": 40.0,
+        "peak_date": "2024-06-28", "low_ratio_pct": 28.5,
+        "low_date": "2026-10-23", "avg_ratio_pct": 32.75,
+        "high_pledge": False, "watch_pledge": False,
+    }
+    data = {
+        "available": True, "code": "002230", "name": "科大讯飞",
+        "as_of": "2026-10-23", "fetched_at": "2026-10-25 10:00:00",
+        "stale": False, "window_start": "2024-01-01",
+        "window_end": "2026-10-25", "years": 3, "has_pledges": True,
+        "latest": latest, "series": [series], "annual": [annual],
+        "counts": counts, "notes": ["质押比例不等于违约"],
+        "url": "https://data.eastmoney.com/gpzy/detail/002230.html",
+    }
+    captured = {}
+
+    def fake_build(code: str, **kwargs) -> dict:
+        captured.update(kwargs)
+        return data
+
+    original = tools.build_pledges
+    tools.build_pledges = fake_build  # type: ignore[assignment]
+    try:
+        result = tools.run_tool(
+            "get_pledges", {"years": 99}, default_company="002230"
+        )
+    finally:
+        tools.build_pledges = original  # type: ignore[assignment]
+
+    assert captured["years"] == 10, captured
+    assert result.ok is True, result
+    assert result.as_of == "2026-10-23", result
+    assert result.sources[0].id == "pledges:002230:2026-10-23", result.sources
+    assert result.sources[0].label == "股权质押", result.sources
+    assert result.sources[0].url == (
+        "https://data.eastmoney.com/gpzy/detail/002230.html"
+    ), result.sources
+    assert result.sources[0].detail == "科大讯飞 股权质押 2026-10-23", result.sources
+
+    point = result.data["latest"]
+    assert point["ratio_pct"] == 28.5, point
+    assert point["balance_shares_wan"] == 100000.0, point
+    assert point["market_cap_yi"] == 50.0, point
+    assert point["deal_num"] == 5, point
+
+    month = result.data["series"][0]
+    assert month["month"] == "2026-10", month
+    assert month["balance_shares_wan"] == 100000.0, month
+
+    year = result.data["annual"][0]
+    assert year["latest_ratio_pct"] == 28.5, year
+    assert year["peak_ratio_pct"] == 35.0, year
+    assert year["market_cap_yi"] == 50.0, year
+
+    counts = result.data["counts"]
+    assert counts["latest_ratio_pct"] == 28.5, counts
+    assert counts["latest_balance_shares_wan"] == 100000.0, counts
+    assert counts["latest_market_cap_yi"] == 50.0, counts
+    assert counts["change_pp"] == -2.5, counts
+    assert counts["direction"] == "下降", counts
+    assert counts["high_pledge"] is False, counts
+    assert result.data["has_pledges"] is True, result.data
+    assert result.data["notes"] == ["质押比例不等于违约"], result.data
+
+
 def test_segments_region_missing() -> None:
     global REGION
     REGION = False
@@ -1468,6 +1560,7 @@ def main() -> None:
     test_insider_trades_tool()
     test_buybacks_tool()
     test_lockup_expiries_tool()
+    test_pledges_tool()
     test_segments_region_missing()
     test_announcements_sources()
     test_valuation()
