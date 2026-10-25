@@ -211,6 +211,57 @@ def test_format() -> None:
     assert "暂无主营构成数据" in sg.format_segments(empty), empty
 
 
+def test_history() -> None:
+    rows = ROWS + [
+        row("能量饮料", 60 * E8, date="2024-06-30", share=75.0),
+        row("电解质饮料", 12 * E8, date="2024-06-30", share=15.0),
+        row("其他饮料", 8 * E8, date="2024-06-30", share=10.0),
+        # 年报不能混进半年报序列，否则同比口径会错
+        row("能量饮料", 200 * E8, date="2025-12-31", share=80.0),
+    ]
+    history = sg.segment_history(rows)
+    assert [period["period"] for period in history] == [
+        "2024-06-30", "2025-06-30", "2026-06-30",
+    ], history
+
+    first, second, latest = history
+    assert round(first["total_income"] / E8, 1) == 80.0, first
+    assert round(latest["total_income"] / E8, 1) == 124.4, latest
+    assert latest["items"][0]["name"] == "能量饮料", latest
+    assert round(latest["items"][0]["yoy"], 1) == 6.9, latest["items"][0]
+    # 2025 H1 还没有茶饮料，最新一期的同比留空
+    tea = next(item for item in latest["items"] if item["name"] == "茶饮料")
+    assert tea["yoy"] is None and tea["share_delta"] is None, tea
+    assert round(second["items"][0]["yoy"], 1) == 39.3, second["items"][0]
+
+    # years 限制期数；返回按时间升序
+    assert [period["period"] for period in sg.segment_history(rows, years=2)] == [
+        "2025-06-30", "2026-06-30",
+    ]
+
+    # 年报序列按年报口径取
+    annual = sg.segment_history([
+        row("主业", 100 * E8, date="2024-12-31"),
+        row("主业", 120 * E8, date="2025-12-31"),
+        row("主业", 80 * E8, date="2025-06-30"),
+    ])
+    assert [period["period"] for period in annual] == [
+        "2024-12-31", "2025-12-31",
+    ], annual
+    assert round(annual[-1]["items"][0]["yoy"], 1) == 20.0, annual[-1]
+
+    # 摘要对象直接带上历史；默认最多 5 期
+    segments = sg.segments_from_rows(rows)
+    assert len(segments["history"]) == 3, segments["history"]
+    assert segments["history"][-1]["period"] == segments["as_of"]
+
+    # 只有一期时保留一期，不编造更早的同比
+    single = sg.segment_history([row("主业", 100 * E8)])
+    assert len(single) == 1 and single[0]["items"][0]["yoy"] is None, single
+
+    assert sg.segments_from_rows([])["history"] == []
+
+
 def test_cache() -> None:
     tmpdir = tempfile.mkdtemp(prefix="segments_test_")
     sg.DB_PATH = os.path.join(tmpdir, "stock.db")
@@ -287,6 +338,7 @@ def main() -> None:
     test_latest_slice()
     test_flags()
     test_format()
+    test_history()
     test_cache()
     test_helpers()
     print("PASS")

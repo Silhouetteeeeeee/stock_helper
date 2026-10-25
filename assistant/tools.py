@@ -141,10 +141,19 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "get_segments",
-            "description": "主营构成：按产品和按地区两组切片，含收入、占比、同比、毛利率",
+            "description": (
+                "主营构成：按产品和按地区两组切片，含收入、占比、同比、毛利率，"
+                "以及最近若干期同口径的分部历史，用来看业务结构变化"
+            ),
             "parameters": {
                 "type": "object",
-                "properties": {"company": _COMPANY},
+                "properties": {
+                    "years": {
+                        "type": "integer",
+                        "description": "分部历史回看期数，1-10，默认 5",
+                    },
+                    "company": _COMPANY,
+                },
                 "additionalProperties": False,
             },
         },
@@ -334,7 +343,7 @@ def run_tool(
         if name == "get_financial_history":
             return _financial_history(code, arguments)
         if name == "get_segments":
-            return _segments(code)
+            return _segments(code, arguments)
         if name == "get_announcements":
             return _announcements(code, arguments)
         if name == "get_valuation":
@@ -553,7 +562,13 @@ def _financial_history(code: str, arguments: dict) -> ToolResult:
     )
 
 
-def _segments(code: str) -> ToolResult:
+def _segments(code: str, arguments: dict) -> ToolResult:
+    try:
+        years = int(arguments.get("years") or 5)
+    except (TypeError, ValueError):
+        years = 5
+    years = min(max(years, 1), 10)
+
     data = ensure_segments(code)
     rows = data.get("rows") or []
     if not rows:
@@ -566,7 +581,12 @@ def _segments(code: str) -> ToolResult:
     sources: list[Source] = []
     for kind, key in (("2", "product"), ("3", "region")):
         piece = segments_from_rows(
-            rows, kind=kind, code=code, name=name, stale=data.get("stale", False)
+            rows,
+            kind=kind,
+            code=code,
+            name=name,
+            stale=data.get("stale", False),
+            years=years,
         )
         # segments_from_rows 在目标口径缺失时会回退到别的口径；
         # 回退出来的产品数据不能再冒充地区切片
@@ -587,6 +607,23 @@ def _segments(code: str) -> ToolResult:
                     "gross_margin": _pct(item.get("gross_margin")),
                 }
                 for item in piece.get("items") or []
+            ],
+            "history": [
+                {
+                    "period": period.get("period"),
+                    "total_income_yi": _yi(period.get("total_income")),
+                    "items": [
+                        {
+                            "name": item.get("name"),
+                            "income_yi": _yi(item.get("income")),
+                            "share": _pct(item.get("share")),
+                            "yoy": _pct(item.get("yoy")),
+                            "gross_margin": _pct(item.get("gross_margin")),
+                        }
+                        for item in period.get("items") or []
+                    ],
+                }
+                for period in piece.get("history") or []
             ],
         })
         sources.append(Source(

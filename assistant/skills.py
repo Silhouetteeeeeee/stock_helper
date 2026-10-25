@@ -34,7 +34,7 @@ BUSINESS_MODEL = Skill(
 3. 看成本与利润质量：主要成本项、毛利率水平、费用率；投资收益、公允价值变动、资产/信用减值损失在 get_finance 里能看到，用来判断利润是否主要来自主营。合同负债/预收款、应付账款反映对下游预收与对上游占款的能力，要和收入规模一起看。工具数据里没有非经常性损益时，明确写「资料不足」，不要猜。
 4. 写 2-3 条关键不确定点：哪个数据最可能被误读、哪块业务最看不懂。
 
-取数建议：get_company_profile 看主营描述与行业；get_segments 看产品与地区构成；get_finance 看最新一期毛利率、净利率、投资收益与减值、合同负债与应付账款；需要拆成本费用或利润分项时看 get_finance 的 income_detail；费用率及其多年趋势用 get_financial_history 的年度序列（销售、管理、研发费用率都在里面）；get_announcements 看是否有重大变化。对照另一家公司时分别取数、分别引用。""",
+取数建议：get_company_profile 看主营描述与行业；get_segments 看产品与地区构成，history 字段给出最近几期的分部收入、占比与同比序列；get_finance 看最新一期毛利率、净利率、投资收益与减值、合同负债与应付账款；需要拆成本费用或利润分项时看 get_finance 的 income_detail；费用率及其多年趋势用 get_financial_history 的年度序列（销售、管理、研发费用率都在里面）；get_announcements 看是否有重大变化。对照另一家公司时分别取数、分别引用。""",
 )
 
 MOAT = Skill(
@@ -57,7 +57,7 @@ MOAT = Skill(
 2. 推断：这个证据为什么构成优势，作用机制是什么。
 3. 对手为何难以复制：复制需要什么、需要多久、卡在哪里。
 
-第三步：用 get_financial_history 取 5-10 年年度序列，看毛利率、净利率、费用率、ROE 是否稳定或改善；大起大落说明优势可能不牢。用 get_segments 看各分部毛利率，判断定价权来自哪块业务。
+第三步：用 get_financial_history 取 5-10 年年度序列，看毛利率、净利率、费用率、ROE 是否稳定或改善；大起大落说明优势可能不牢。用 get_segments 看各分部毛利率及其 history 序列，判断定价权来自哪块业务、份额在往哪边移。
 
 第四步：主动写竞争侵蚀路径：降价、技术替代、渠道扩张、政策变化，哪条最可能发生、为什么，发生时先看哪个指标恶化。
 
@@ -152,7 +152,7 @@ GROWTH_OUTLOOK = Skill(
 3. 给三档情景，每档写清关键假设和触发条件。
 4. 给 2–3 条可验证的观察指标（份额、单店/单吨收入、产能利用率、新业务收入占比等）。
 
-取数：get_financial_history 看多年营收/利润增速、资本开支、固定资产/在建工程与现金流；get_finance 看最新一期固定资产、在建工程、资本开支与研发投入，cashflow_detail 里看投资活动现金流与资本开支的对应关系；get_segments 看哪块业务在增长、哪块在萎缩；get_company_profile 看行业与主营；get_announcements 看扩产、并购、新业务。对照另一家公司时分别取数、分别引用。
+取数：get_financial_history 看多年营收/利润增速、资本开支、固定资产/在建工程与现金流；get_finance 看最新一期固定资产、在建工程、资本开支与研发投入，cashflow_detail 里看投资活动现金流与资本开支的对应关系；get_segments 的 history 看哪块业务在增长、哪块在萎缩（同一口径的多期序列，比单期同比更可靠）；get_company_profile 看行业与主营；get_announcements 看扩产、并购、新业务。对照另一家公司时分别取数、分别引用。
 
 禁止：
 - 把历史增速线性外推成未来增速。

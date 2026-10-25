@@ -7,6 +7,7 @@
 * ``ensure_segments(code)``   按需取数，本地缓存一天
 * ``build_segments(code)``    生成分析用摘要：分部列表、同比、提示
 * ``segments_from_rows(...)`` 纯函数，由已入库的行生成，便于测试
+* ``segment_history(...)``   同一口径下最近若干期的分部序列
 * ``format_segments(...)``    渲染成可读文本
 
 口径：金额单位是元；占比与同比都是百分数（72.0 表示 72%）；缺失值保留
@@ -34,6 +35,8 @@ TABLE = "biz_segment"
 DEFAULT_CACHE_HOURS = 24
 # 文本里列多少个分部：再往后都是"其他"，参考价值不大
 TOP_ITEMS = 5
+# 多年分部序列默认回看几期
+DEFAULT_HISTORY_PERIODS = 5
 
 # --- 提示阈值 -------------------------------------------------------------
 CONCENTRATION_PCT = 85.0    # 单一分部占比超过这个值算高度集中
@@ -117,11 +120,13 @@ def segments_from_rows(
     code: str | None = None,
     name: str | None = None,
     stale: bool = False,
+    years: int = DEFAULT_HISTORY_PERIODS,
 ) -> dict:
     """由已入库的分部行生成摘要（纯函数）。
 
     同一天可能有产品 / 地区 / 行业三种口径，优先取产品口径；某口径下
-    没有收入数据时依次回退。
+    没有收入数据时依次回退。``history`` 返回同一口径下最近 ``years``
+    期的可比较序列，供判断业务结构变化。
     """
     rows = [row for row in rows if row.get("report_date") and row.get("item_name")]
     if not rows:
@@ -184,12 +189,128 @@ def segments_from_rows(
         "previous_date": previous_date if previous else None,
         "count": len(items),
         "items": items,
+        "history": segment_history(rows, kind=kind, years=years),
         "stale": stale,
         "sources": {SOURCE_LABEL: report_date},
     }
     segments["flags"] = _flags(segments)
     segments["summary"] = format_segments(segments)
     return segments
+
+
+def segment_history(
+    rows: list[dict],
+    kind: str | None = None,
+    years: int = DEFAULT_HISTORY_PERIODS,
+) -> list[dict]:
+    """同一口径下最近若干期的分部序列（纯函数，按报告期升序）。
+
+    优先选择和最新一期相同月日的历史（例如都是半年报），避免年报和
+    半年报混在一起算同比；没有同月日数据时才退回全部报告期。每期的
+    同比和占比变动都只和上一期同口径数据比较。
+    """
+    rows = [
+        row for row in rows
+        if row.get("report_date")
+        and row.get("kind")
+        and row.get("item_name")
+        and _is_segment_item(row)
+    ]
+    if not rows:
+        return []
+
+    latest_date, kind, _ = _latest_slice(rows, kind)
+    if not latest_date or not kind:
+        return []
+
+    try:
+        window = min(max(int(years), 1), 10)
+    except (TypeError, ValueError):
+        window = DEFAULT_HISTORY_PERIODS
+
+    periods = _history_periods(rows, kind, latest_date, window)
+    history: list[dict] = []
+    previous: dict[str, dict] = {}
+    previous_total: float | None = None
+
+    for period in periods:
+        current_rows = [
+            row for row in rows
+            if row["report_date"] == period and row["kind"] == kind
+        ]
+        total = sum(
+            row["income"] for row in current_rows
+            if row.get("income") is not None
+        )
+        items = []
+        for row in sorted(
+            current_rows, key=lambda item: item.get("income") or 0, reverse=True
+        ):
+            income = row.get("income")
+            before = previous.get(row["item_name"]) or {}
+            before_income = before.get("income")
+            share = (
+                income / total * 100.0
+                if total and income is not None
+                else row.get("share")
+            )
+            before_share = (
+                before_income / previous_total * 100.0
+                if before_income is not None and previous_total
+                else before.get("share")
+            )
+            yoy = share_delta = None
+            if before_income and income is not None:
+                yoy = (income - before_income) / before_income * 100.0
+            if share is not None and before_share is not None:
+                share_delta = share - before_share
+            items.append({
+                "name": row["item_name"],
+                "income": income,
+                "share": share,
+                "gross_margin": row.get("gross_margin"),
+                "yoy": yoy,
+                "share_delta": share_delta,
+                "is_other": _is_other(row["item_name"]),
+            })
+
+        history.append({
+            "period": period,
+            "total_income": total or None,
+            "count": len(items),
+            "items": items,
+        })
+        previous = {row["item_name"]: row for row in current_rows}
+        previous_total = total or None
+
+    return history
+
+
+def _history_periods(
+    rows: list[dict],
+    kind: str,
+    latest_date: str,
+    years: int,
+) -> list[str]:
+    """选可比较的报告期：优先同月日，其次全部报告期，按时间升序。"""
+    dates = sorted({
+        row["report_date"] for row in rows
+        if row["kind"] == kind and _is_segment_item(row)
+    })
+    suffix = latest_date[4:]
+    comparable = [value for value in dates if value.endswith(suffix)]
+    if not comparable:
+        comparable = dates
+    return comparable[-years:]
+
+
+def _is_segment_item(row: dict) -> bool:
+    """有收入、且不是合计/子项的行，才能参与占比和同比计算。"""
+    return (
+        row.get("income") is not None
+        and not _is_total(row.get("item_name") or "")
+        and not _is_sub_item(row.get("item_name") or "")
+    )
 
 
 def format_segments(segments: dict) -> str:
@@ -394,6 +515,7 @@ def _empty(code: str | None, name: str | None) -> dict:
         "kind_label": "构成",
         "as_of": None,
         "items": [],
+        "history": [],
         "flags": [],
         "stale": False,
         "sources": {},

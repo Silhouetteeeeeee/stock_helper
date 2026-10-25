@@ -29,7 +29,7 @@ def test_business_model_skill() -> None:
     assert skill.title.startswith("第一问")
     text = skill.instructions
     for phrase in ("三句话", "收入", "毛利率", "非经常性", "不确定",
-                   "投资收益", "合同负债", "income_detail"):
+                   "投资收益", "合同负债", "income_detail", "history"):
         assert phrase in text, phrase
 
 
@@ -39,7 +39,7 @@ def test_moat_skill() -> None:
     assert skill.title.startswith("第二问")
     text = skill.instructions
     for phrase in ("品牌", "成本", "网络效应", "转换成本", "规模",
-                   "可证伪", "资料不足", "get_financial_history"):
+                   "可证伪", "资料不足", "get_financial_history", "history"):
         assert phrase in text, phrase
     assert "高毛利" in text and "不是护城河" in text
 
@@ -77,7 +77,7 @@ def test_growth_outlook_skill() -> None:
     text = skill.instructions
     for phrase in ("市场空间", "渗透率", "份额", "再投资", "资本开支",
                    "固定资产", "在建工程", "cashflow_detail", "资料不足",
-                   "get_segments", "线性外推"):
+                   "get_segments", "history", "线性外推"):
         assert phrase in text, phrase
     assert "不要用过去几年的增速外推未来" in text
     assert "不要编数字" in text

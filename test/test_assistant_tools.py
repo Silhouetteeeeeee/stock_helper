@@ -334,7 +334,8 @@ def test_profile_tool() -> None:
     assert result.sources[0].fetched_at == "2026-10-24 09:31:02", result.sources[0]
 
 
-def fake_segments(rows, kind=None, code=None, name=None, stale=False) -> dict:
+def fake_segments(rows, kind=None, code=None, name=None, stale=False,
+                  years=5) -> dict:
     if kind == "3" and not REGION:
         return {"available": False}
     items = ([{"name": "能量饮料", "income": 8936615605.76, "share": 71.82,
@@ -347,6 +348,25 @@ def fake_segments(rows, kind=None, code=None, name=None, stale=False) -> dict:
         "as_of": "2026-06-30", "kind": kind,
         "kind_label": "产品" if kind == "2" else "地区",
         "total_income": 12443036555.29, "items": items,
+        "history": [
+            {
+                "period": "2025-06-30",
+                "total_income": 8000000000.0,
+                "items": [
+                    {"name": items[0]["name"], "income": 6000000000.0,
+                     "share": 75.0, "yoy": None, "gross_margin": 50.0},
+                ],
+            },
+            {
+                "period": "2026-06-30",
+                "total_income": 12443036555.29,
+                "items": [
+                    {"name": items[0]["name"], "income": items[0]["income"],
+                     "share": items[0]["share"], "yoy": items[0]["yoy"],
+                     "gross_margin": items[0]["gross_margin"]},
+                ],
+            },
+        ],
     }
 
 
@@ -457,6 +477,15 @@ def test_segments_two_slices() -> None:
         "segments:605499:2026-06-30:region",
     ], ids
     assert [slice_["label"] for slice_ in result.data["slices"]] == ["产品", "地区"], result.data
+    product = result.data["slices"][0]
+    assert [period["period"] for period in product["history"]] == [
+        "2025-06-30", "2026-06-30",
+    ], product
+    latest = product["history"][-1]
+    assert latest["total_income_yi"] == 124.43, latest
+    assert latest["items"][0]["income_yi"] == 89.37, latest
+    assert latest["items"][0]["yoy"] == 6.9, latest
+    assert product["history"][0]["items"][0]["yoy"] is None, product
 
 
 def test_segments_region_missing() -> None:
