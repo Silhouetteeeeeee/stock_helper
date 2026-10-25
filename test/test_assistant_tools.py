@@ -148,7 +148,7 @@ def test_schemas() -> None:
         "get_financial_history", "get_segments", "get_management",
         "get_shareholders", "get_peers", "get_dividends", "get_insider_trades",
         "get_buybacks", "get_lockup_expiries", "get_pledges",
-        "get_announcements",
+        "get_earnings_forecasts", "get_announcements",
         "get_valuation", "calc_valuation",
     ], names
     for item in tools.schemas():
@@ -1213,6 +1213,100 @@ def test_pledges_tool() -> None:
     assert result.data["notes"] == ["质押比例不等于违约"], result.data
 
 
+def test_earnings_forecasts_tool() -> None:
+    net = {
+        "finance_code": "004", "label": "归母净利润", "unit": "yuan",
+        "type": "减亏", "lower": -228_000_000, "upper": -180_000_000,
+        "yoy_low": 5.0, "yoy_high": 25.0,
+        "prior": -238_927_200, "mid": -204_000_000,
+    }
+    eps = {
+        "finance_code": "003", "label": "每股收益", "unit": "per_share",
+        "type": "减亏", "lower": -0.0967, "upper": -0.0764,
+        "yoy_low": None, "yoy_high": None,
+        "prior": -0.1034, "mid": -0.08655,
+    }
+    latest = {
+        "report_date": "2026-06-30", "notice_date": "2026-07-15",
+        "year": 2026, "type": "减亏", "metrics": [net, eps],
+        "reason": "研发投入增加，收入增长",
+    }
+    counts = {
+        "events": 6, "latest_report_date": "2026-06-30",
+        "latest_notice_date": "2026-07-15", "latest_type": "减亏",
+        "latest_net_profit_low": -228_000_000,
+        "latest_net_profit_high": -180_000_000,
+        "latest_net_profit_yoy_low": 5.0,
+        "latest_net_profit_yoy_high": 25.0,
+        "latest_eps_low": -0.0967, "latest_eps_high": -0.0764,
+        "latest_revenue_low": None, "latest_revenue_high": None,
+    }
+    data = {
+        "available": True, "code": "002230", "name": "科大讯飞",
+        "as_of": "2026-07-15", "fetched_at": "2026-10-25 10:00:00",
+        "stale": False, "window_start": "2024-01-01",
+        "window_end": "2026-10-25", "years": 3, "has_forecasts": True,
+        "latest": latest, "events": [latest], "annual": [
+            {"year": 2026, "events": 2, "report_dates": ["2026-06-30"]},
+        ], "type_counts": [{"type": "减亏", "events": 2}],
+        "events_truncated": 0, "counts": counts,
+        "notes": ["预告可能被修订"],
+        "url": "https://data.eastmoney.com/bbsj/yjyg.html?code=002230",
+    }
+    captured = {}
+
+    def fake_build(code: str, **kwargs) -> dict:
+        captured.update(kwargs)
+        return data
+
+    original = tools.build_forecasts
+    tools.build_forecasts = fake_build  # type: ignore[assignment]
+    try:
+        result = tools.run_tool(
+            "get_earnings_forecasts", {"years": 99},
+            default_company="002230",
+        )
+    finally:
+        tools.build_forecasts = original  # type: ignore[assignment]
+
+    assert captured["years"] == 10, captured
+    assert result.ok is True, result
+    assert result.as_of == "2026-07-15", result
+    assert result.sources[0].id == "forecasts:002230:2026-07-15", result.sources
+    assert result.sources[0].label == "业绩预告", result.sources
+    assert result.sources[0].url == (
+        "https://data.eastmoney.com/bbsj/yjyg.html?code=002230"
+    ), result.sources
+    assert result.sources[0].detail == "科大讯飞 业绩预告 2026-07-15", result.sources
+
+    event = result.data["latest"]
+    assert event["report_date"] == "2026-06-30", event
+    assert event["notice_date"] == "2026-07-15", event
+    assert len(event["metrics"]) == 2, event
+
+    net_row = event["metrics"][0]
+    assert net_row["label"] == "归母净利润", net_row
+    assert net_row["unit"] == "亿元", net_row
+    assert net_row["lower"] == -2.28, net_row
+    assert net_row["upper"] == -1.8, net_row
+    assert net_row["yoy_low"] == 5.0, net_row
+    assert net_row["prior"] == -2.39, net_row
+
+    eps_row = event["metrics"][1]
+    assert eps_row["unit"] == "元/股", eps_row
+    assert eps_row["lower"] == -0.0967, eps_row
+    assert eps_row["upper"] == -0.0764, eps_row
+
+    counts = result.data["counts"]
+    assert counts["latest_net_profit_low_yi"] == -2.28, counts
+    assert counts["latest_net_profit_high_yi"] == -1.8, counts
+    assert counts["latest_net_profit_yoy_low"] == 5.0, counts
+    assert counts["latest_eps_low"] == -0.0967, counts
+    assert result.data["type_counts"] == [{"type": "减亏", "events": 2}], result.data
+    assert result.data["has_forecasts"] is True, result.data
+    assert result.data["notes"] == ["预告可能被修订"], result.data
+
+
 def test_segments_region_missing() -> None:
     global REGION
     REGION = False
@@ -1561,6 +1655,7 @@ def main() -> None:
     test_buybacks_tool()
     test_lockup_expiries_tool()
     test_pledges_tool()
+    test_earnings_forecasts_tool()
     test_segments_region_missing()
     test_announcements_sources()
     test_valuation()

@@ -18,6 +18,7 @@ from stock.buybacks import build_buybacks
 from stock.db_service import get_all_stocks, get_stock, get_stock_by_name
 from stock.dividends import PAGE_URL as DIVIDEND_URL
 from stock.dividends import build_dividends
+from stock.forecasts import build_forecasts
 from stock.finance_history import build_history
 from stock.finance_service import ensure_financials
 from stock.finance_snapshot import (
@@ -352,6 +353,28 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "get_earnings_forecasts",
+            "description": (
+                "业绩预告：按报告期列归母净利润、扣非净利润、每股收益、"
+                "营业收入的预告区间与同比，区分预增/预减/减亏等类型；"
+                "同一报告期只保留最新修订。预告是初步测算，可能被修正"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "years": {
+                        "type": "integer",
+                        "description": "回看年数，1-10，默认 3",
+                    },
+                    "company": _COMPANY,
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_announcements",
             "description": "近期公告：带标签的事件（回购、减持、重大合同等）",
             "parameters": {
@@ -551,6 +574,8 @@ def run_tool(
             return _lockup_expiries(code, arguments)
         if name == "get_pledges":
             return _pledges(code, arguments)
+        if name == "get_earnings_forecasts":
+            return _earnings_forecasts(code, arguments)
         if name == "get_announcements":
             return _announcements(code, arguments)
         if name == "get_valuation":
@@ -1294,6 +1319,67 @@ def _pledges(code: str, arguments: dict) -> ToolResult:
     )
 
 
+def _earnings_forecasts(code: str, arguments: dict) -> ToolResult:
+    try:
+        years = int(arguments.get("years", 3))
+    except (TypeError, ValueError):
+        years = 3
+    years = min(max(years, 1), 10)
+
+    data = build_forecasts(code, years=years)
+    events = [_forecast_event(item) for item in data.get("events") or []]
+    latest = (
+        _forecast_event(data["latest"]) if data.get("latest") else None
+    )
+
+    name = data.get("name")
+    as_of = data.get("as_of") or ""
+    source = Source(
+        id=f"forecasts:{code}:{as_of}" if as_of else f"forecasts:{code}",
+        label="业绩预告",
+        detail=f"{name or code} 业绩预告 {as_of}".strip(),
+        as_of=as_of,
+        fetched_at=data.get("fetched_at") or "",
+        url=data.get("url") or "",
+    )
+    return ToolResult(
+        ok=True,
+        company=code,
+        as_of=as_of or None,
+        sources=(source,),
+        data={
+            "code": code,
+            "name": name,
+            "as_of": as_of or None,
+            "window_start": data.get("window_start"),
+            "window_end": data.get("window_end"),
+            "years": data.get("years", years),
+            "has_forecasts": data.get("has_forecasts", False),
+            "latest": latest,
+            "events": events,
+            "annual": [
+                {
+                    "year": item.get("year"),
+                    "events": item.get("events"),
+                    "report_dates": item.get("report_dates") or [],
+                }
+                for item in data.get("annual") or []
+            ],
+            "type_counts": [
+                {
+                    "type": item.get("type"),
+                    "events": item.get("events"),
+                }
+                for item in data.get("type_counts") or []
+            ],
+            "events_truncated": data.get("events_truncated", 0),
+            "counts": _forecast_counts(data.get("counts") or {}),
+            "notes": data.get("notes") or [],
+            "stale": data.get("stale", False),
+        },
+    )
+
+
 def _announcements(code: str, arguments: dict) -> ToolResult:
     try:
         days = int(arguments.get("days") or 180)
@@ -1986,6 +2072,78 @@ def _pledge_counts(item: dict) -> dict:
         "avg_ratio_pct": _round(item.get("avg_ratio_pct"), 2),
         "high_pledge": item.get("high_pledge", False),
         "watch_pledge": item.get("watch_pledge", False),
+    }
+
+
+def _forecast_metric(item: dict) -> dict:
+    """业绩预告指标：金额换亿元，每股收益保留四位。"""
+    item = item or {}
+    per_share = item.get("unit") == "per_share"
+    return {
+        "finance_code": item.get("finance_code"),
+        "label": item.get("label"),
+        "unit": "元/股" if per_share else "亿元",
+        "type": item.get("type"),
+        "lower": (
+            _round(item.get("lower"), 4) if per_share
+            else _yi(item.get("lower"))
+        ),
+        "upper": (
+            _round(item.get("upper"), 4) if per_share
+            else _yi(item.get("upper"))
+        ),
+        "yoy_low": _round(item.get("yoy_low"), 2),
+        "yoy_high": _round(item.get("yoy_high"), 2),
+        "prior": (
+            _round(item.get("prior"), 4) if per_share
+            else _yi(item.get("prior"))
+        ),
+        "mid": (
+            _round(item.get("mid"), 4) if per_share
+            else _yi(item.get("mid"))
+        ),
+    }
+
+
+def _forecast_event(item: dict) -> dict:
+    """一期业绩预告：报告期 + 公告日 + 各指标。"""
+    item = item or {}
+    return {
+        "report_date": item.get("report_date"),
+        "notice_date": item.get("notice_date"),
+        "year": item.get("year"),
+        "type": item.get("type"),
+        "metrics": [
+            _forecast_metric(metric) for metric in item.get("metrics") or []
+        ],
+        "reason": _clip(item.get("reason") or "", 200),
+    }
+
+
+def _forecast_counts(item: dict) -> dict:
+    """业绩预告总览：金额换亿元，每股收益保留四位。"""
+    item = item or {}
+    return {
+        "events": item.get("events", 0),
+        "latest_report_date": item.get("latest_report_date"),
+        "latest_notice_date": item.get("latest_notice_date"),
+        "latest_type": item.get("latest_type"),
+        "latest_net_profit_low_yi": _yi(
+            item.get("latest_net_profit_low")
+        ),
+        "latest_net_profit_high_yi": _yi(
+            item.get("latest_net_profit_high")
+        ),
+        "latest_net_profit_yoy_low": _round(
+            item.get("latest_net_profit_yoy_low"), 2
+        ),
+        "latest_net_profit_yoy_high": _round(
+            item.get("latest_net_profit_yoy_high"), 2
+        ),
+        "latest_eps_low": _round(item.get("latest_eps_low"), 4),
+        "latest_eps_high": _round(item.get("latest_eps_high"), 4),
+        "latest_revenue_low_yi": _yi(item.get("latest_revenue_low")),
+        "latest_revenue_high_yi": _yi(item.get("latest_revenue_high")),
     }
 
 

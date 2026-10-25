@@ -80,7 +80,8 @@ def test_growth_outlook_skill() -> None:
     text = skill.instructions
     for phrase in ("市场空间", "渗透率", "份额", "再投资", "资本开支",
                    "固定资产", "在建工程", "cashflow_detail", "资料不足",
-                   "get_segments", "history", "线性外推", "get_peers", "同业"):
+                   "get_segments", "history", "线性外推", "get_peers", "同业",
+                   "get_earnings_forecasts", "业绩预告"):
         assert phrase in text, phrase
     assert "不要用过去几年的增速外推未来" in text
     assert "不要编数字" in text
