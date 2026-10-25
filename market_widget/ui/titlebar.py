@@ -35,8 +35,7 @@ class TitleBar(QWidget):
         self._input_button.setCheckable(True)
         self._input_button.clicked.connect(self.input_clicked.emit)
 
-        self._assistant_button = self._icon_button("AI", "投资助手")  # 投资助手面板开关
-        self._assistant_button.setCheckable(True)
+        self._assistant_button = self._icon_button("AI", "打开投资助手（浏览器）")
         self._assistant_button.setFont(ui_font(8, bold=True))
         self._assistant_button.clicked.connect(self.assistant_clicked.emit)
 
@@ -72,9 +71,12 @@ class TitleBar(QWidget):
         """齿轮按钮的选中态与数据输入面板的显隐保持一致。"""
         self._input_button.setChecked(active)
 
-    def set_assistant_active(self, active: bool) -> None:
-        """AI 按钮的选中态与投资助手面板的显隐保持一致。"""
-        self._assistant_button.setChecked(active)
+    def set_assistant_busy(self, busy: bool) -> None:
+        """启动 Web 助手期间禁用按钮，避免重复拉起服务。"""
+        self._assistant_button.setEnabled(not busy)
+        self._assistant_button.setToolTip(
+            "正在启动投资助手…" if busy else "打开投资助手（浏览器）"
+        )
 
     def set_minimized(self, minimized: bool) -> None:
         """锁定迷你态时把收起按钮改成「展开」。"""

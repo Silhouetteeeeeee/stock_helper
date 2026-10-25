@@ -19,3 +19,6 @@ venv/
 *.xlsx
 # 测试运行时会生成数据库副本
 test/*.db
+# 投资助手 Web 页面的运行时状态与日志
+data/assistant_state.json
+data/assistant_web.log

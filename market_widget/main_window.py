@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -74,8 +75,8 @@ from .theme import (
     numeric_font,
     ui_font,
 )
+from .assistant_web import AssistantWeb
 from .ui import (
-    AssistantPanel,
     FundamentalsPanel,
     IndexPanel,
     InputPanel,
@@ -205,7 +206,7 @@ class MarketWidget(QWidget):
         self._titlebar.minimize_clicked.connect(self.toggle_minimized)
         self._titlebar.close_clicked.connect(self.close)
         self._titlebar.input_clicked.connect(self.toggle_input_panel)
-        self._titlebar.assistant_clicked.connect(self.toggle_assistant_panel)
+        self._titlebar.assistant_clicked.connect(self.open_assistant_web)
 
         # 迷你态单行（标题栏下方，只显示一只指数）
         self._mini_row = self._build_mini_row(self._card)  # 迷你态单行容器
@@ -230,19 +231,10 @@ class MarketWidget(QWidget):
         body_layout.addWidget(self._fundamentals)
         body_layout.addWidget(self._divider(self._body))
 
-        # 投资助手：默认隐藏，由标题栏 AI 按钮展开；公司跟随当前选中标的
-        self._assistant_section = QWidget(self._body)
-        assistant_layout = QVBoxLayout(self._assistant_section)
-        assistant_layout.setContentsMargins(0, 0, 0, 0)
-        assistant_layout.setSpacing(0)
-        assistant_layout.addWidget(self._divider(self._assistant_section))
-        assistant_layout.addWidget(
-            self._section_title("投资助手", self._assistant_section)
-        )
-        self._assistant = AssistantPanel(parent=self._assistant_section)
-        assistant_layout.addWidget(self._assistant)
-        self._assistant_section.hide()
-        body_layout.addWidget(self._assistant_section)
+        # 投资助手跑在本地 Web 页面里，标题栏 AI 按钮负责启动/打开
+        self._assistant_web = AssistantWeb(self)
+        self._assistant_web.opened.connect(self._on_assistant_opened)
+        self._assistant_web.failed.connect(self._on_assistant_failed)
 
         body_layout.addWidget(self._divider(self._body))
         body_layout.addWidget(self._section_title("自选股", self._body))
@@ -399,8 +391,8 @@ class MarketWidget(QWidget):
             self._fundamentals.show_loading()
             self.fundamentals_requested.emit(code)
 
-        # 助手跟随选中标的；研究进行中的切换等这一轮结束再生效
-        self._assistant.set_company(code, name, is_index)
+        # 助手页面通过状态文件跟随选中标的
+        self._assistant_web.set_company(code, name, is_index)
 
         self.symbol_selected.emit(code, name, is_index)
         self._schedule_refit()
@@ -539,18 +531,17 @@ class MarketWidget(QWidget):
         self._titlebar.set_input_active(show)
         self._schedule_refit()
 
-    def toggle_assistant_panel(self) -> None:
-        """切换投资助手面板；迷你态下点击会先展开窗口。"""
-        if self._locked_minimized:
-            self._locked_minimized = False
-        if not self._hover_expanded:
-            self._hover_expanded = True
-            self._apply_mode_visibilities()
+    def open_assistant_web(self) -> None:
+        """打开投资助手页面；首次点击会先启动本地 Streamlit 服务。"""
+        self._assistant_web.open()
+        self._titlebar.set_assistant_busy(self._assistant_web.is_busy())
 
-        show = self._assistant_section.isHidden()
-        self._assistant_section.setVisible(show)
-        self._titlebar.set_assistant_active(show)
-        self._schedule_refit()
+    def _on_assistant_opened(self, url: str) -> None:
+        self._titlebar.set_assistant_busy(False)
+
+    def _on_assistant_failed(self, message: str) -> None:
+        self._titlebar.set_assistant_busy(False)
+        QMessageBox.warning(self, "投资助手", message)
 
     # ------------------------------------------------------------------
     # 窗口行为
@@ -571,6 +562,7 @@ class MarketWidget(QWidget):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self.stop_finance_monitor()
+        self._assistant_web.stop()
         super().closeEvent(event)
 
     def _schedule_refit(self):

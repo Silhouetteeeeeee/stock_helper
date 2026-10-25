@@ -10,11 +10,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from PySide6.QtCore import QObject, QThreadPool, Signal
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import QApplication
 
-import market_widget.main_window as mw
 from market_widget.ui import assistant_panel as ap
 
 
@@ -136,55 +134,12 @@ def test_failure_and_missing_key(app: QApplication) -> None:
     assert panel.is_busy() is False
 
 
-class FakeScheduler(QObject):
-    financials_updated = Signal(str)
-    sync_finished = Signal(dict)
-    error = Signal(str)
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-
-    def start(self) -> None:
-        pass
-
-    def stop(self) -> None:
-        pass
-
-
-class HeadlessWidget(mw.MarketWidget):
-    def _apply_geometry(self) -> None:
-        pass
-
-
-def test_window_wiring(app: QApplication) -> None:
-    mw.FinanceScheduler = FakeScheduler  # type: ignore[assignment]
-    window = HeadlessWidget()
-
-    assert window._assistant_section.isHidden() is True
-    code, _name, is_index = window.selected_symbol()
-    if is_index:
-        assert window._assistant._company is None
-    else:
-        assert window._assistant._company == code, window._assistant._company
-
-    window.toggle_assistant_panel()
-    assert window._assistant_section.isHidden() is False
-    assert window._titlebar._assistant_button.isChecked() is True
-
-    window.toggle_assistant_panel()
-    assert window._assistant_section.isHidden() is True
-    assert window._titlebar._assistant_button.isChecked() is False
-
-    window.closeEvent(QCloseEvent())
-
-
 def main() -> None:
     app = QApplication.instance() or QApplication([])
     test_answer_html()
     test_company_state(app)
     test_ask_flow(app)
     test_failure_and_missing_key(app)
-    test_window_wiring(app)
     app.quit()
     print("PASS")
     sys.stdout.flush()
