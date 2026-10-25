@@ -401,24 +401,27 @@ TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "get_research_notes",
             "description": (
-                "机构调研问答：最近 N 场调研纪要里的提问，可按关键词"
-                "（如毛利率、产能、竞争、分红）筛选并返回问答片段；"
-                "纪要由公司整理披露，回答不代表承诺"
+                "机构调研纪要原文：最近 N 场调研的问答全文（问答成对、"
+                "已去重），交给你自己阅读并概括；超出 max_chars 的部分"
+                "会截断并标记，纪要由公司整理披露，回答不代表承诺"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "keyword": {
-                        "type": "string",
-                        "description": "关键词，多个用逗号或空格分隔；省略则返回提问列表",
-                    },
                     "events": {
                         "type": "integer",
-                        "description": "最近几场，1-10，默认 3",
+                        "description": "最近几场，1-10，默认 2",
                     },
                     "years": {
                         "type": "integer",
                         "description": "回看年数，1-10，默认 3",
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": (
+                            "原文总字数上限，3000-40000，默认 12000；"
+                            "场次越少每场越完整"
+                        ),
                     },
                     "company": _COMPANY,
                 },
@@ -1537,17 +1540,21 @@ def _research_notes(code: str, arguments: dict) -> ToolResult:
     except (TypeError, ValueError):
         events = 3
     events = min(max(events, 1), 10)
-    keyword = arguments.get("keyword")
+    try:
+        max_chars = int(arguments.get("max_chars", 12_000))
+    except (TypeError, ValueError):
+        max_chars = 12_000
+    max_chars = min(max(max_chars, 3_000), 40_000)
 
     data = build_research_notes(
-        code, keyword=keyword, events=events, years=years
+        code, events=events, years=years, max_chars=max_chars
     )
     name = data.get("name")
     as_of = data.get("as_of") or ""
     source = Source(
         id=f"research-notes:{code}:{as_of}" if as_of else f"research-notes:{code}",
-        label="调研问答",
-        detail=f"{name or code} 调研问答 {as_of}".strip(),
+        label="调研纪要",
+        detail=f"{name or code} 调研纪要 {as_of}".strip(),
         as_of=as_of,
         fetched_at=data.get("fetched_at") or "",
         url=data.get("url") or "",
@@ -1562,21 +1569,24 @@ def _research_notes(code: str, arguments: dict) -> ToolResult:
             "name": name,
             "as_of": as_of or None,
             "years": data.get("years", years),
-            "keywords": data.get("keywords") or [],
+            "budget": data.get("budget", max_chars),
             "events": [
                 {
                     "date": item.get("date"),
                     "notice_date": item.get("notice_date"),
                     "place": item.get("place"),
+                    "ways": item.get("ways") or [],
                     "institution_count": item.get("institution_count"),
                     "has_note": item.get("has_note", False),
-                    "questions": item.get("questions") or [],
-                    "matches": item.get("matches") or [],
                     "lead": item.get("lead"),
+                    "qa": item.get("qa") or [],
+                    "text": item.get("text"),
+                    "total_chars": item.get("total_chars", 0),
+                    "truncated": item.get("truncated", False),
+                    "omitted": item.get("omitted", 0),
                 }
                 for item in data.get("events") or []
             ],
-            "matched": data.get("matched", 0),
             "counts": data.get("counts") or {},
             "notes": data.get("notes") or [],
             "stale": data.get("stale", False),

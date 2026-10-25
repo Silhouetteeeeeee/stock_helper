@@ -1389,18 +1389,23 @@ def test_institutional_research_tool() -> None:
 def test_research_notes_tool() -> None:
     data = {
         "code": "002230", "name": "科大讯飞", "as_of": "2026-08-23",
-        "years": 3, "keywords": ["毛利率"], "matched": 1,
+        "years": 3, "budget": 40_000,
         "events": [{
             "date": "2026-08-21", "notice_date": "2026-08-23",
-            "place": "合肥总部", "institution_count": 43,
-            "has_note": True, "questions": ["毛利率变化的原因？"],
-            "matches": [{
+            "place": "合肥总部", "ways": ["业绩说明会"],
+            "institution_count": 43, "has_note": True,
+            "lead": "投资者关系活动主要内容介绍",
+            "qa": [{
                 "question": "毛利率变化的原因？",
-                "text": "问：毛利率变化的原因？ 答：产品结构改善。",
+                "answer": "产品结构改善。",
             }],
-            "lead": None,
+            "text": None, "total_chars": 16_000,
+            "truncated": False, "omitted": 0,
         }],
-        "counts": {"events": 1, "events_with_notes": 1, "matched": 1},
+        "counts": {
+            "events": 1, "events_with_notes": 1, "questions": 1,
+            "omitted": 0, "total_chars": 16_000, "returned_chars": 120,
+        },
         "notes": ["问答可能经过筛选"],
         "url": "https://data.eastmoney.com/jgdy/",
         "fetched_at": "2026-10-25 10:00:00", "stale": False,
@@ -1416,26 +1421,28 @@ def test_research_notes_tool() -> None:
     try:
         result = tools.run_tool(
             "get_research_notes",
-            {"keyword": "毛利率", "events": 99, "years": 99},
+            {"events": 99, "years": 99, "max_chars": 999_999},
             default_company="002230",
         )
     finally:
         tools.build_research_notes = original  # type: ignore[assignment]
 
-    assert captured["keyword"] == "毛利率", captured
     assert captured["events"] == 10, captured
     assert captured["years"] == 10, captured
+    assert captured["max_chars"] == 40_000, captured
     assert result.ok is True, result
     assert result.as_of == "2026-08-23", result
     assert result.sources[0].id == "research-notes:002230:2026-08-23", result.sources
-    assert result.sources[0].label == "调研问答", result.sources
+    assert result.sources[0].label == "调研纪要", result.sources
 
     event = result.data["events"][0]
     assert event["has_note"] is True, event
-    assert event["matches"][0]["text"].startswith("问：毛利率"), event
-    assert result.data["matched"] == 1, result.data
-    assert result.data["counts"]["matched"] == 1, result.data
-    assert result.data["keywords"] == ["毛利率"], result.data
+    assert event["lead"] == "投资者关系活动主要内容介绍", event
+    assert event["qa"][0]["question"] == "毛利率变化的原因？", event
+    assert event["qa"][0]["answer"] == "产品结构改善。", event
+    assert event["truncated"] is False, event
+    assert result.data["budget"] == 40_000, result.data
+    assert result.data["counts"]["questions"] == 1, result.data
     assert result.data["notes"] == ["问答可能经过筛选"], result.data
 
 

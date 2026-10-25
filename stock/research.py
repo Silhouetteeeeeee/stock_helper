@@ -46,12 +46,13 @@ CONTENT_EXCERPT = 200
 PAGE_SIZE = 80
 MAX_PAGES = 30
 
-DEFAULT_NOTE_EVENTS = 3
+DEFAULT_NOTE_EVENTS = 2
 MAX_NOTE_EVENTS = 10
-MAX_QUESTIONS = 10
-MAX_MATCHES = 5
-MATCH_CLIP = 800
-LEAD_CLIP = 300
+DEFAULT_NOTE_BUDGET = 12_000
+MIN_NOTE_BUDGET = 3_000
+MAX_NOTE_BUDGET = 40_000
+LEAD_CLIP = 1_200
+ANSWER_CLIP = 2_500
 
 
 class ResearchError(Exception):
@@ -294,16 +295,17 @@ def build_research(
 
 def build_research_notes(
     code: str,
-    keyword: str | list[str] | None = None,
     events: int = DEFAULT_NOTE_EVENTS,
     years: int = DEFAULT_YEARS,
+    max_chars: int = DEFAULT_NOTE_BUDGET,
     today: str | None = None,
     max_age_hours: float = NOTE_CACHE_HOURS,
     force: bool = False,
 ) -> dict:
-    """最近几场调研的问答正文，可按关键词筛选。
+    """最近几场调研的问答原文，交给大模型自己概括。
 
     纪要原文按活动缓存在 ``research_notes`` 表里，同一场不会重复抓取。
+    返回的原文按 ``max_chars`` 控制总篇幅，放不下的问答标记 ``truncated``。
     """
     code = normalize_stock_code(code)
     if not code:
@@ -313,20 +315,26 @@ def build_research_notes(
         limit = min(max(int(events), 1), MAX_NOTE_EVENTS)
     except (TypeError, ValueError):
         limit = DEFAULT_NOTE_EVENTS
+    budget = _note_budget(max_chars)
 
     base = build_research(code, years=years, today=today)
     selected = (base.get("events") or [])[:limit]
-    keywords = _keywords(keyword)
 
-    rows = []
-    for event in selected:
-        content = ensure_note(
+    contents = [
+        ensure_note(
             code,
             event.get("notice_date"),
             event.get("date"),
             max_age_hours=max_age_hours,
             force=force,
         )
+        for event in selected
+    ]
+    with_note = sum(1 for content in contents if content)
+    share = budget // with_note if with_note else 0
+
+    rows = []
+    for event, content in zip(selected, contents):
         item = {
             "key": event.get("key"),
             "date": event.get("date"),
@@ -337,27 +345,32 @@ def build_research_notes(
             "institution_count": event.get("institution_count"),
             "disclosed_count": event.get("disclosed_count"),
             "has_note": bool(content),
-            "questions": [],
-            "matches": [],
             "lead": None,
+            "qa": [],
+            "text": None,
+            "total_chars": len(content or ""),
+            "returned_chars": 0,
+            "truncated": False,
+            "omitted": 0,
         }
         if content:
-            item["questions"] = _questions(content, MAX_QUESTIONS)
-            if keywords:
-                item["matches"] = _matches(
-                    content, keywords, MAX_MATCHES
-                )
-            else:
-                item["lead"] = _excerpt(content, LEAD_CLIP)
+            item.update(_note_body(content, share))
         rows.append(item)
 
-    matched = sum(len(item["matches"]) for item in rows)
+    counts = {
+        "events": len(rows),
+        "events_with_notes": sum(1 for item in rows if item["has_note"]),
+        "questions": sum(len(item["qa"]) for item in rows),
+        "omitted": sum(item["omitted"] for item in rows),
+        "total_chars": sum(item["total_chars"] for item in rows),
+        "returned_chars": sum(item["returned_chars"] for item in rows),
+    }
     notes = [
-        "问答由公司整理披露，回答可能经过筛选，不代表承诺",
-        "关键词是字符串匹配，同义表述可能漏掉",
-        f"只检索最近 {len(rows)} 场已披露的纪要",
+        "纪要是公司整理披露的，问题经过筛选，回答不代表承诺",
+        "原文按篇幅截取，可调大 max_chars 或减少 events 读取更多问答",
+        f"只读取最近 {len(rows)} 场已披露的纪要",
     ]
-    if not any(item["has_note"] for item in rows):
+    if not counts["events_with_notes"]:
         notes = ["最近几场没有取到纪要原文，可能公司未披露全文"]
 
     data = {
@@ -366,16 +379,9 @@ def build_research_notes(
         "name": base.get("name"),
         "as_of": base.get("as_of"),
         "years": years,
-        "keywords": keywords,
+        "budget": budget,
         "events": rows,
-        "matched": matched,
-        "counts": {
-            "events": len(rows),
-            "events_with_notes": sum(
-                1 for item in rows if item["has_note"]
-            ),
-            "matched": matched,
-        },
+        "counts": counts,
         "notes": notes,
         "sources": base.get("sources") or {SOURCE_LABEL: base.get("as_of")},
         "url": base.get("url") or PAGE_URL,
@@ -397,26 +403,24 @@ def format_research_notes(
     name: str | None = None,
     as_of: str | None = None,
 ) -> str:
-    """渲染成可读文本：最近几场的提问，命中关键词时给出原文片段。"""
+    """渲染成可读文本：最近几场的问答原文与截取情况。"""
     code = code or data.get("code")
     years = data.get("years") or DEFAULT_YEARS
-    title = f"{name}({code})" if name else (code or "机构调研问答")
+    title = f"{name}({code})" if name else (code or "机构调研纪要")
 
-    parts = [title, f"机构调研问答近{years}年"]
+    parts = [title, f"调研纪要近{years}年"]
     if as_of:
         parts.append(f"数据截至 {as_of}")
     lines = [" · ".join(parts)]
 
-    keywords = data.get("keywords") or []
     counts = data.get("counts") or {}
-    if keywords:
-        lines.append(f"关键词：{'、'.join(keywords)}")
     text = (
         f"最近 {counts.get('events', 0)} 场："
-        f"{counts.get('events_with_notes', 0)} 场有纪要"
+        f"{counts.get('events_with_notes', 0)} 场有纪要 / "
+        f"共 {counts.get('questions', 0)} 问"
     )
-    if keywords:
-        text += f" / 命中 {counts.get('matched', 0)} 段"
+    if counts.get("omitted"):
+        text += f"（另有 {counts['omitted']} 问未展示）"
     lines.append(text)
 
     for event in data.get("events") or []:
@@ -425,14 +429,15 @@ def format_research_notes(
             head += f" {event['place']}"
         head += f"（{event.get('institution_count')} 家）"
         lines.append(head)
-        if event.get("matches"):
-            for match in event["matches"][:2]:
-                lines.append(f"  {match.get('text')}")
-        elif event.get("questions"):
-            for question in event["questions"][:3]:
-                lines.append(f"  问：{question}")
-        elif event.get("lead"):
-            lines.append(f"  {event['lead']}")
+        if event.get("qa"):
+            for item in event["qa"][:2]:
+                lines.append(f"  问：{item.get('question')}")
+                answer = item.get("answer") or ""
+                clipped = answer[:80] + ("…" if len(answer) > 80 else "")
+                lines.append(f"  答：{clipped}")
+        elif event.get("text"):
+            body = event["text"]
+            lines.append(f"  {body[:100]}{'…' if len(body) > 100 else ''}")
         else:
             lines.append("  未取到纪要原文")
 
@@ -1014,22 +1019,6 @@ def _institution_text(event: dict) -> str:
     return text
 
 
-def _keywords(value) -> list[str]:
-    """把关键词参数拆成列表；支持中英文逗号、顿号、分号与空格。"""
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple)):
-        parts = [str(item) for item in value]
-    else:
-        parts = re.split(r"[,，、;；\s]+", str(value))
-    items = []
-    for part in parts:
-        text = part.strip()
-        if text and text not in items:
-            items.append(text)
-    return items[:10]
-
-
 def _split_blocks(content: str) -> list[str]:
     """把纪要拆成问答块；没有“问：”标记时退化为段落。"""
     text = content.replace("\r\n", "\n").replace("\r", "\n")
@@ -1054,43 +1043,86 @@ def _question_of(block: str) -> str | None:
     if not match:
         return None
     text = _one_line(match.group(1))
-    return text[:200] if text else None
+    return text[:300] if text else None
 
 
-def _questions(content: str, limit: int) -> list[str]:
-    items = []
+def _answer_of(block: str) -> str:
+    match = re.search(r"答\s*[：:]\s*(.*)", block, re.S)
+    return _one_line(match.group(1) if match else "")
+
+
+def _note_budget(value) -> int:
+    try:
+        budget = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_NOTE_BUDGET
+    return min(max(budget, MIN_NOTE_BUDGET), MAX_NOTE_BUDGET)
+
+
+def _note_body(content: str, budget: int) -> dict:
+    """把一场纪要整理成开场说明 + 问答对，按字数预算截取。
+
+    问答原文交给大模型概括，这里只做清洗、去重与篇幅控制，不做检索。
+    """
+    blocks = _note_blocks(content)
+    lead = None
+    if blocks and not blocks[0]["question"]:
+        lead = _clip_text(blocks[0]["text"], min(LEAD_CLIP, budget))
+        blocks = blocks[1:]
+    questions = [block for block in blocks if block["question"]]
+
+    if not questions:
+        text = _clip_text(_one_line(content), budget) or ""
+        return {
+            "lead": None,
+            "qa": [],
+            "text": text,
+            "returned_chars": len(text),
+            "truncated": len(_one_line(content)) > len(text),
+            "omitted": 0,
+        }
+
+    used = len(lead or "")
+    qa: list[dict] = []
+    omitted = 0
+    for block in questions:
+        if omitted:
+            omitted += 1
+            continue
+        room = budget - used - len(block["question"]) - 4
+        if room < 60:
+            omitted = 1
+            continue
+        answer = block["text"][:min(room, ANSWER_CLIP)]
+        qa.append({"question": block["question"], "answer": answer})
+        used += len(block["question"]) + len(answer) + 4
+
+    return {
+        "lead": lead,
+        "qa": qa,
+        "text": None,
+        "returned_chars": used,
+        "truncated": omitted > 0,
+        "omitted": omitted,
+    }
+
+
+def _note_blocks(content: str) -> list[dict]:
+    """把纪要拆成 ``{"question", "text"}``；开场等非问答段落 question 为空。"""
+    blocks = []
+    seen = set()
     for block in _split_blocks(content):
         question = _question_of(block)
-        if question and question not in items:
-            items.append(question)
-        if len(items) >= limit:
-            break
-    return items
-
-
-def _matches(
-    content: str,
-    keywords: list[str],
-    limit: int,
-) -> list[dict]:
-    matches = []
-    folded = [keyword.casefold() for keyword in keywords]
-    for block in _split_blocks(content):
-        text = _one_line(block)
-        lowered = text.casefold()
-        if not any(keyword in lowered for keyword in folded):
-            continue
-        clipped = (
-            text if len(text) <= MATCH_CLIP
-            else text[:MATCH_CLIP] + "…"
-        )
-        matches.append({
-            "question": _question_of(block),
-            "text": clipped,
-        })
-        if len(matches) >= limit:
-            break
-    return matches
+        if question:
+            if question in seen:
+                continue
+            seen.add(question)
+            blocks.append({"question": question, "text": _answer_of(block)})
+        else:
+            text = _one_line(block)
+            if text:
+                blocks.append({"question": None, "text": text})
+    return blocks
 
 
 def _one_line(text: str) -> str:

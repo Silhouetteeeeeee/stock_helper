@@ -342,25 +342,43 @@ NOTE = (
 
 
 def test_note_helpers() -> None:
-    assert research._keywords("毛利率,产能；分红 现金流") == [
-        "毛利率", "产能", "分红", "现金流",
-    ], research._keywords("毛利率,产能；分红 现金流")
-    assert research._keywords(None) == [], research._keywords(None)
+    assert research._question_of("问：毛利率为什么上升？答：产品结构改善。") == (
+        "毛利率为什么上升？"
+    )
+    assert research._answer_of("问：毛利率为什么上升？答：产品结构改善。") == (
+        "产品结构改善。"
+    )
+    assert research._answer_of("没有回答") == ""
 
-    questions = research._questions(NOTE, 10)
-    assert questions == [
+    blocks = research._note_blocks(NOTE)
+    assert [block["question"] for block in blocks] == [
+        None,
         "上半年毛利率变化的原因？",
         "产能规划与资本开支？",
         "分红政策会不会调整？",
-    ], questions
+    ], blocks
+    assert blocks[0]["text"] == "投资者关系活动主要内容介绍", blocks
+    assert blocks[1]["text"].startswith("产品结构改善"), blocks
 
-    matches = research._matches(NOTE, ["毛利率"], 5)
-    assert len(matches) == 1, matches
-    assert matches[0]["question"] == "上半年毛利率变化的原因？", matches
-    assert "毛利率提升" in matches[0]["text"], matches
+    assert research._note_budget("bad") == research.DEFAULT_NOTE_BUDGET
+    assert research._note_budget(1) == research.MIN_NOTE_BUDGET
+    assert research._note_budget(999_999) == research.MAX_NOTE_BUDGET
 
-    none = research._matches(NOTE, ["海外"], 5)
-    assert none == [], none
+    body = research._note_body(NOTE, 10_000)
+    assert body["lead"] == "投资者关系活动主要内容介绍", body
+    assert len(body["qa"]) == 3, body
+    assert body["truncated"] is False, body
+    assert body["omitted"] == 0, body
+    assert body["text"] is None, body
+
+    small = research._note_body(NOTE, 100)
+    assert small["truncated"] is True, small
+    assert small["omitted"] >= 1, small
+    assert small["returned_chars"] <= 100, small
+
+    plain = research._note_body("一、公司介绍。\n\n二、行业情况。", 10_000)
+    assert plain["qa"] == [], plain
+    assert plain["text"].startswith("一、公司介绍"), plain
 
 
 def test_build_notes() -> None:
@@ -377,53 +395,62 @@ def test_build_notes() -> None:
 
     research.ensure_note = fake_note  # type: ignore[assignment]
     try:
-        data = research.build_research_notes(
-            CODE, keyword="毛利率", events=2, today=TODAY,
-        )
+        data = research.build_research_notes(CODE, events=2, today=TODAY)
     finally:
         research.build_research = original_build  # type: ignore[assignment]
         research.ensure_note = original_note  # type: ignore[assignment]
 
     assert data["code"] == CODE, data
-    assert data["keywords"] == ["毛利率"], data
+    assert data["budget"] == research.DEFAULT_NOTE_BUDGET, data
     assert data["counts"] == {
-        "events": 2, "events_with_notes": 1, "matched": 1,
+        "events": 2,
+        "events_with_notes": 1,
+        "questions": 3,
+        "omitted": 0,
+        "total_chars": len(NOTE),
+        "returned_chars": data["counts"]["returned_chars"],
     }, data["counts"]
+    assert data["counts"]["returned_chars"] > 0, data["counts"]
     assert len(calls) == 2, calls
 
     first, second = data["events"]
     assert first["has_note"] is True, first
-    assert first["matches"][0]["question"] == "上半年毛利率变化的原因？", first
+    assert first["qa"][0]["question"] == "上半年毛利率变化的原因？", first
+    assert first["qa"][0]["answer"].startswith("产品结构改善"), first
+    assert first["lead"] == "投资者关系活动主要内容介绍", first
     assert second["has_note"] is False, second
-    assert second["matches"] == [], second
+    assert second["qa"] == [], second
+    assert second["text"] is None, second
 
-    assert "关键词：毛利率" in data["summary"], data["summary"]
-    assert "命中 1 段" in data["summary"], data["summary"]
-    assert "上半年毛利率变化的原因" in data["summary"], data["summary"]
+    assert "最近 2 场：1 场有纪要 / 共 3 问" in data["summary"], data["summary"]
+    assert "问：上半年毛利率变化的原因？" in data["summary"], data["summary"]
 
 
-def test_build_notes_without_keyword() -> None:
+def test_build_notes_budget() -> None:
     base = research.research_from_rows(ROWS, CODE, years=3, today=TODAY)
     original_build = research.build_research
     original_note = research.ensure_note
+    long_note = NOTE + "\n\n" + "\n\n".join(
+        f"问：第{i}个问题？\n答：{'答' * 400}。" for i in range(20)
+    )
     research.build_research = lambda code, **kwargs: base  # type: ignore[assignment]
     research.ensure_note = (  # type: ignore[assignment]
-        lambda code, notice, receive=None, **kwargs: NOTE
+        lambda code, notice, receive=None, **kwargs: long_note
     )
     try:
         data = research.build_research_notes(
-            CODE, events=1, today=TODAY,
+            CODE, events=2, max_chars=3_000, today=TODAY,
         )
     finally:
         research.build_research = original_build  # type: ignore[assignment]
         research.ensure_note = original_note  # type: ignore[assignment]
 
-    event = data["events"][0]
-    assert data["keywords"] == [], data
-    assert event["matches"] == [], event
-    assert len(event["questions"]) == 3, event
-    assert event["lead"].startswith("投资者关系活动主要内容介绍"), event
-    assert "最近 1 场：1 场有纪要" in data["summary"], data["summary"]
+    assert data["budget"] == 3_000, data
+    assert data["counts"]["omitted"] > 0, data["counts"]
+    for event in data["events"]:
+        assert event["returned_chars"] <= 3_000 // 2, event
+        assert event["truncated"] is True, event
+    assert "未展示" in data["summary"], data["summary"]
 
 
 def test_note_cache() -> None:
@@ -487,7 +514,7 @@ def main() -> None:
     test_build()
     test_note_helpers()
     test_build_notes()
-    test_build_notes_without_keyword()
+    test_build_notes_budget()
     test_note_cache()
     test_page_url()
     print("PASS")
