@@ -147,7 +147,7 @@ def test_schemas() -> None:
         "load_skill", "resolve_company", "get_company_profile", "get_finance",
         "get_financial_history", "get_segments", "get_management",
         "get_shareholders", "get_peers", "get_dividends", "get_insider_trades",
-        "get_buybacks", "get_announcements",
+        "get_buybacks", "get_lockup_expiries", "get_announcements",
         "get_valuation", "calc_valuation",
     ], names
     for item in tools.schemas():
@@ -1008,6 +1008,119 @@ def test_buybacks_tool() -> None:
     assert result.data["notes"] == ["用于注销的回购减少总股本"], result.data
 
 
+def test_lockup_expiries_tool() -> None:
+    next_event = {
+        "free_date": "2026-11-20", "year": 2026, "is_upcoming": True,
+        "days_until": 26, "shares": 10_000_000,
+        "market_cap": 5_000_000_000.0, "price": 50.0,
+        "ratio_total_pct": 2.5, "ratio_free_pct": 10.0, "holders": 5,
+        "shares_type": "股权激励限售股份", "market_type": "sh",
+        "free_shares_after": None, "non_free_shares_after": None,
+        "able_free_shares": None, "update_date": "2026-10-20",
+    }
+    latest = {
+        "free_date": "2024-05-27", "year": 2024, "is_upcoming": False,
+        "days_until": -516, "shares": 240_739_143,
+        "market_cap": 53_680_014_106.14, "price": 222.98,
+        "ratio_total_pct": 60.183281168,
+        "ratio_free_pct": 60.183281168, "holders": 3,
+        "shares_type": "首发原股东限售股份", "market_type": "sh",
+        "free_shares_after": 400_010_000, "non_free_shares_after": 0,
+        "able_free_shares": 240_739_143, "update_date": "2024-11-18",
+    }
+    annual = {
+        "year": 2022, "events": 1, "history_events": 1,
+        "upcoming_events": 0, "shares": 36_000_000,
+        "market_cap": 4_953_600_000.0, "missing_market_cap": 0,
+    }
+    types = {
+        "type": "首发原股东限售股份", "events": 3, "upcoming": 0,
+        "shares": 360_000_000, "market_cap": 72_563_155_482.24,
+    }
+    counts = {
+        "events": 5, "history_events": 3, "upcoming_events": 2,
+        "next_date": "2026-11-20", "next_days": 26,
+        "next_shares": 10_000_000, "next_market_cap": 5_000_000_000.0,
+        "next_ratio_pct": 2.5, "next_holders": 5,
+        "next_type": "股权激励限售股份",
+        "upcoming_shares": 30_000_000,
+        "upcoming_market_cap": 13_000_000_000.0,
+        "upcoming_ratio_pct": 7.5, "history_shares": 360_000_000,
+        "history_market_cap": 72_563_155_482.24,
+        "total_shares": 390_000_000,
+        "total_market_cap": 85_563_155_482.24,
+        "latest_date": "2024-05-27", "latest_type": "首发原股东限售股份",
+        "missing_market_cap": 0,
+    }
+    data = {
+        "available": True, "code": "605499", "name": "东鹏饮料",
+        "as_of": "2026-10-21", "fetched_at": "2026-10-25 10:00:00",
+        "stale": False, "window_start": "2022-01-01",
+        "window_end": "2027-10-25", "years": 5, "ahead_months": 12,
+        "has_lockups": True, "latest": latest, "next": next_event,
+        "upcoming": [next_event], "history": [latest], "annual": [annual],
+        "types": [types], "events_truncated": 0, "counts": counts,
+        "notes": ["解禁不等于减持"], "url": (
+            "https://data.eastmoney.com/dxf/detail.html?code=605499"
+        ),
+    }
+    captured = {}
+
+    def fake_build(code: str, **kwargs) -> dict:
+        captured.update(kwargs)
+        return data
+
+    original = tools.build_lockups
+    tools.build_lockups = fake_build  # type: ignore[assignment]
+    try:
+        result = tools.run_tool(
+            "get_lockup_expiries",
+            {"years": 99, "ahead_months": 99},
+            default_company="605499",
+        )
+    finally:
+        tools.build_lockups = original  # type: ignore[assignment]
+
+    assert captured["years"] == 10, captured
+    assert captured["ahead_months"] == 36, captured
+    assert result.ok is True, result
+    assert result.as_of == "2026-10-21", result
+    assert result.sources[0].id == "lockups:605499:2026-10-21", result.sources
+    assert result.sources[0].label == "限售解禁", result.sources
+    assert result.sources[0].url == (
+        "https://data.eastmoney.com/dxf/detail.html?code=605499"
+    ), result.sources
+    assert result.sources[0].detail == "东鹏饮料 限售解禁 2026-10-21", result.sources
+
+    event = result.data["next"]
+    assert event["shares_wan"] == 1000.0, event
+    assert event["market_cap_yi"] == 50.0, event
+    assert event["ratio_total_pct"] == 2.5, event
+    assert event["days_until"] == 26, event
+
+    latest_row = result.data["latest"]
+    assert latest_row["shares_wan"] == 24073.91, latest_row
+    assert latest_row["market_cap_yi"] == 536.8, latest_row
+    assert latest_row["free_shares_after_wan"] == 40001.0, latest_row
+    assert latest_row["non_free_shares_after_wan"] == 0.0, latest_row
+
+    year = result.data["annual"][0]
+    assert year["shares_wan"] == 3600.0, year
+    assert year["market_cap_yi"] == 49.54, year
+
+    type_row = result.data["types"][0]
+    assert type_row["shares_wan"] == 36000.0, type_row
+    assert type_row["market_cap_yi"] == 725.63, type_row
+
+    counts = result.data["counts"]
+    assert counts["next_shares_wan"] == 1000.0, counts
+    assert counts["upcoming_market_cap_yi"] == 130.0, counts
+    assert counts["history_shares_wan"] == 36000.0, counts
+    assert counts["latest_date"] == "2024-05-27", counts
+    assert result.data["has_lockups"] is True, result.data
+    assert result.data["notes"] == ["解禁不等于减持"], result.data
+
+
 def test_segments_region_missing() -> None:
     global REGION
     REGION = False
@@ -1354,6 +1467,7 @@ def main() -> None:
     test_dividends_tool()
     test_insider_trades_tool()
     test_buybacks_tool()
+    test_lockup_expiries_tool()
     test_segments_region_missing()
     test_announcements_sources()
     test_valuation()

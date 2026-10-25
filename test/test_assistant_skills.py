@@ -95,6 +95,7 @@ def test_management_skill() -> None:
                    "get_shareholders", "get_dividends", "get_insider_trades",
                    "get_buybacks", "增减持", "持股计划", "分红率",
                    "回购计划", "注销", "薪酬", "持股", "股东户数",
+                   "get_lockup_expiries", "限售解禁", "解禁不等于减持",
                    "红旗"):
         assert phrase in text, phrase
     assert "标题不等于事实" in text

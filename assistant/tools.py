@@ -28,6 +28,7 @@ from stock.finance_snapshot import (
 )
 from stock.insider_trades import PAGE_URL as INSIDER_URL
 from stock.insider_trades import build_insider_trades
+from stock.lockups import build_lockups
 from stock.management import PAGE_URL as MANAGEMENT_URL
 from stock.management import build_management
 from stock.peers import build_peers
@@ -302,6 +303,32 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "get_lockup_expiries",
+            "description": (
+                "限售解禁：列每批解禁日、解禁股数、解禁市值、占总股本比例、"
+                "股东户数、股份类型与解禁后流通股；区分历史与未来批次，"
+                "按年度和股份类型汇总。只含已披露安排，解禁不等于减持"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "years": {
+                        "type": "integer",
+                        "description": "历史回看年数，1-10，默认 3",
+                    },
+                    "ahead_months": {
+                        "type": "integer",
+                        "description": "未来展望月数，0-36，默认 12",
+                    },
+                    "company": _COMPANY,
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_announcements",
             "description": "近期公告：带标签的事件（回购、减持、重大合同等）",
             "parameters": {
@@ -497,6 +524,8 @@ def run_tool(
             return _insider_trades(code, arguments)
         if name == "get_buybacks":
             return _buybacks(code, arguments)
+        if name == "get_lockup_expiries":
+            return _lockup_expiries(code, arguments)
         if name == "get_announcements":
             return _announcements(code, arguments)
         if name == "get_valuation":
@@ -1133,6 +1162,68 @@ def _buybacks(code: str, arguments: dict) -> ToolResult:
     )
 
 
+def _lockup_expiries(code: str, arguments: dict) -> ToolResult:
+    try:
+        years = int(arguments.get("years", 3))
+    except (TypeError, ValueError):
+        years = 3
+    years = min(max(years, 1), 10)
+    try:
+        ahead_months = int(arguments.get("ahead_months", 12))
+    except (TypeError, ValueError):
+        ahead_months = 12
+    ahead_months = min(max(ahead_months, 0), 36)
+
+    data = build_lockups(
+        code, years=years, ahead_months=ahead_months
+    )
+    upcoming = [
+        _lockup_event(item) for item in data.get("upcoming") or []
+    ]
+    history = [_lockup_event(item) for item in data.get("history") or []]
+    annual = [_lockup_year(item) for item in data.get("annual") or []]
+    types = [_lockup_type(item) for item in data.get("types") or []]
+    latest = _lockup_event(data["latest"]) if data.get("latest") else None
+    next_event = _lockup_event(data["next"]) if data.get("next") else None
+
+    name = data.get("name")
+    as_of = data.get("as_of") or ""
+    source = Source(
+        id=f"lockups:{code}:{as_of}" if as_of else f"lockups:{code}",
+        label="限售解禁",
+        detail=f"{name or code} 限售解禁 {as_of}".strip(),
+        as_of=as_of,
+        fetched_at=data.get("fetched_at") or "",
+        url=data.get("url") or "",
+    )
+    return ToolResult(
+        ok=True,
+        company=code,
+        as_of=as_of or None,
+        sources=(source,),
+        data={
+            "code": code,
+            "name": name,
+            "as_of": as_of or None,
+            "window_start": data.get("window_start"),
+            "window_end": data.get("window_end"),
+            "years": data.get("years", years),
+            "ahead_months": data.get("ahead_months", ahead_months),
+            "has_lockups": data.get("has_lockups", False),
+            "latest": latest,
+            "next": next_event,
+            "upcoming": upcoming,
+            "history": history,
+            "annual": annual,
+            "types": types,
+            "events_truncated": data.get("events_truncated", 0),
+            "counts": _lockup_counts(data.get("counts") or {}),
+            "notes": data.get("notes") or [],
+            "stale": data.get("stale", False),
+        },
+    )
+
+
 def _announcements(code: str, arguments: dict) -> ToolResult:
     try:
         days = int(arguments.get("days") or 180)
@@ -1682,6 +1773,84 @@ def _buyback_counts(item: dict) -> dict:
             "planned_amount_complete", True
         ),
         "latest_update": item.get("latest_update"),
+    }
+
+
+def _lockup_event(item: dict) -> dict:
+    """解禁批次一行：股数换万股，市值换亿元。"""
+    item = item or {}
+    return {
+        "free_date": item.get("free_date"),
+        "year": item.get("year"),
+        "is_upcoming": item.get("is_upcoming", False),
+        "days_until": item.get("days_until"),
+        "shares_wan": _wan(item.get("shares")),
+        "market_cap_yi": _yi(item.get("market_cap")),
+        "price": _round(item.get("price"), 2),
+        "ratio_total_pct": _round(item.get("ratio_total_pct"), 2),
+        "ratio_free_pct": _round(item.get("ratio_free_pct"), 2),
+        "holders": item.get("holders"),
+        "shares_type": item.get("shares_type"),
+        "market_type": item.get("market_type"),
+        "free_shares_after_wan": _wan(item.get("free_shares_after")),
+        "non_free_shares_after_wan": _wan(
+            item.get("non_free_shares_after")
+        ),
+        "able_free_shares_wan": _wan(item.get("able_free_shares")),
+        "update_date": item.get("update_date"),
+    }
+
+
+def _lockup_year(item: dict) -> dict:
+    """年度解禁汇总：股数换万股，市值换亿元。"""
+    item = item or {}
+    return {
+        "year": item.get("year"),
+        "events": item.get("events"),
+        "history_events": item.get("history_events"),
+        "upcoming_events": item.get("upcoming_events"),
+        "shares_wan": _wan(item.get("shares")),
+        "market_cap_yi": _yi(item.get("market_cap")),
+        "missing_market_cap": item.get("missing_market_cap", 0),
+    }
+
+
+def _lockup_type(item: dict) -> dict:
+    """按股份类型汇总。"""
+    item = item or {}
+    return {
+        "type": item.get("type"),
+        "events": item.get("events"),
+        "upcoming": item.get("upcoming"),
+        "shares_wan": _wan(item.get("shares")),
+        "market_cap_yi": _yi(item.get("market_cap")),
+    }
+
+
+def _lockup_counts(item: dict) -> dict:
+    """解禁总览：股数换万股，市值换亿元。"""
+    item = item or {}
+    return {
+        "events": item.get("events", 0),
+        "history_events": item.get("history_events", 0),
+        "upcoming_events": item.get("upcoming_events", 0),
+        "next_date": item.get("next_date"),
+        "next_days": item.get("next_days"),
+        "next_shares_wan": _wan(item.get("next_shares")),
+        "next_market_cap_yi": _yi(item.get("next_market_cap")),
+        "next_ratio_pct": _round(item.get("next_ratio_pct"), 2),
+        "next_holders": item.get("next_holders"),
+        "next_type": item.get("next_type"),
+        "upcoming_shares_wan": _wan(item.get("upcoming_shares")),
+        "upcoming_market_cap_yi": _yi(item.get("upcoming_market_cap")),
+        "upcoming_ratio_pct": _round(item.get("upcoming_ratio_pct"), 2),
+        "history_shares_wan": _wan(item.get("history_shares")),
+        "history_market_cap_yi": _yi(item.get("history_market_cap")),
+        "total_shares_wan": _wan(item.get("total_shares")),
+        "total_market_cap_yi": _yi(item.get("total_market_cap")),
+        "latest_date": item.get("latest_date"),
+        "latest_type": item.get("latest_type"),
+        "missing_market_cap": item.get("missing_market_cap", 0),
     }
 
 
