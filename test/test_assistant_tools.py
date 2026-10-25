@@ -60,12 +60,47 @@ def fake_snapshot(code: str, **kwargs) -> dict:
     }
 
 
+def fake_valuation(code: str, **kwargs) -> dict:
+    return {
+        "available": True,
+        "code": code,
+        "name": "东鹏饮料",
+        "as_of": "2026-10-23",
+        "fetched_at": "2026-10-24 16:27:38",
+        "price": {"close": 74.0, "market_cap": 37.0e9},
+        "valuation": {
+            "pe_ttm": {"value": 10.2},
+            "pb_mrq": {"value": 4.6},
+        },
+    }
+
+
+def fake_financial_rows() -> list[dict]:
+    return [
+        {"report_date": "2025-06-30", "cost_of_revenue": 5e9,
+         "net_profit_attributable": 1.8e9, "net_profit": 1.9e9,
+         "operating_cash_flow": 2.2e9, "capex": 0.7e9,
+         "equity_parent": 7e9, "minority_interest": 0.2e9,
+         "fetched_at": "2026-10-24 15:57:57"},
+        {"report_date": "2025-12-31", "cost_of_revenue": 5e9,
+         "net_profit_attributable": 3.5e9, "net_profit": 3.6e9,
+         "operating_cash_flow": 4.0e9, "capex": 1.0e9,
+         "equity_parent": 7.5e9, "minority_interest": 0.2e9,
+         "fetched_at": "2026-10-24 15:57:57"},
+        {"report_date": "2026-06-30", "cost_of_revenue": 5e9,
+         "net_profit_attributable": 2.0e9, "net_profit": 2.1e9,
+         "operating_cash_flow": 2.5e9, "capex": 0.8e9,
+         "equity_parent": 8e9, "minority_interest": 0.2e9,
+         "fetched_at": "2026-10-24 15:57:57"},
+    ]
+
+
 def test_schemas() -> None:
     names = [item["function"]["name"] for item in tools.schemas()]
     assert names == [
         "load_skill", "resolve_company", "get_company_profile", "get_finance",
         "get_financial_history", "get_segments", "get_announcements",
-        "get_valuation",
+        "get_valuation", "calc_valuation",
     ], names
     for item in tools.schemas():
         assert item["type"] == "function"
@@ -397,6 +432,193 @@ def test_valuation() -> None:
     assert result.sources[0].id == "valuation:605499:2026-10-23"
 
 
+def test_calc_valuation_check() -> None:
+    originals = (tools.build_valuation, tools.ensure_financials)
+    tools.build_valuation = fake_valuation  # type: ignore[assignment]
+    tools.ensure_financials = lambda code: fake_financial_rows()  # type: ignore[assignment]
+    try:
+        result = tools.run_tool(
+            "calc_valuation", {"mode": "check"}, default_company="605499"
+        )
+    finally:
+        tools.build_valuation, tools.ensure_financials = originals  # type: ignore[assignment]
+
+    assert result.ok is True, result
+    assert result.data["market_cap_yi"] == 370.0, result.data
+    assert result.data["financials"]["ttm_net_profit_yi"] == 37.0, result.data
+    assert result.data["financials"]["equity_parent_yi"] == 80.0, result.data
+    assert result.data["financials"]["ttm_fcf_yi"] == 32.0, result.data
+    assert result.data["checks"][0]["name"] == "PE(TTM)"
+    assert result.data["checks"][0]["status"] == "warn", result.data["checks"]
+    assert result.data["checks"][1]["status"] == "pass", result.data["checks"]
+    assert result.data["fcf_yield_pct"] == 8.65, result.data
+    assert any("PE(TTM)" in item for item in result.data["warnings"]), result.data
+    assert [source.id for source in result.sources] == [
+        "valuation:605499:2026-10-23",
+        "finance:605499:2026-06-30",
+    ], result.sources
+
+
+def test_calc_valuation_check_edge_cases() -> None:
+    originals = (tools.build_valuation, tools.ensure_financials)
+    try:
+        # 亏损：PE 不适用，PB 仍可校验
+        loss_rows = fake_financial_rows()
+        # TTM = -2.0 + 3.5 - 1.8 = -0.3e9，确保是负利润
+        loss_rows[-1]["net_profit_attributable"] = -2.0e9
+        tools.build_valuation = fake_valuation  # type: ignore[assignment]
+        tools.ensure_financials = lambda code: loss_rows  # type: ignore[assignment]
+        loss = tools.run_tool(
+            "calc_valuation", {"mode": "check"}, default_company="605499"
+        )
+        assert loss.ok is True, loss
+        assert loss.data["checks"][0]["status"] == "skip", loss.data["checks"]
+        assert any("净利润为负" in item for item in loss.data["warnings"]), loss.data
+
+        # 金融机构：自由现金流收益率口径不可比
+        bank_rows = fake_financial_rows()
+        for row in bank_rows:
+            row["cost_of_revenue"] = None
+        tools.ensure_financials = lambda code: bank_rows  # type: ignore[assignment]
+        bank = tools.run_tool(
+            "calc_valuation", {"mode": "check"}, default_company="600036"
+        )
+        assert bank.ok is True, bank
+        assert bank.data["financials"]["is_financial"] is True, bank.data
+        assert bank.data["fcf_yield_pct"] is None, bank.data
+        assert any("金融机构" in item for item in bank.data["warnings"]), bank.data
+
+        # 没有估值或财报时给出可读的失败原因
+        tools.build_valuation = lambda code, **kwargs: {"available": False}  # type: ignore[assignment]
+        missing_valuation = tools.run_tool(
+            "calc_valuation", {"mode": "check"}, default_company="605499"
+        )
+        assert missing_valuation.ok is False, missing_valuation
+        assert "没有估值数据" in missing_valuation.error, missing_valuation
+
+        tools.build_valuation = fake_valuation  # type: ignore[assignment]
+        tools.ensure_financials = lambda code: []  # type: ignore[assignment]
+        missing_finance = tools.run_tool(
+            "calc_valuation", {"mode": "check"}, default_company="605499"
+        )
+        assert missing_finance.ok is False, missing_finance
+        assert "财报" in missing_finance.error, missing_finance
+    finally:
+        tools.build_valuation, tools.ensure_financials = originals  # type: ignore[assignment]
+
+
+def test_calc_valuation_scenario() -> None:
+    original = tools.build_valuation
+    tools.build_valuation = fake_valuation  # type: ignore[assignment]
+    try:
+        result = tools.run_tool(
+            "calc_valuation",
+            {
+                "mode": "scenario",
+                "base_value": 3.0,
+                "growth_pct": [0, 10, 20],
+                "exit_pe": [12, 15, 18],
+            },
+            default_company="605499",
+        )
+    finally:
+        tools.build_valuation = original  # type: ignore[assignment]
+
+    assert result.ok is True, result
+    scenarios = result.data["scenarios"]
+    assert [item["label"] for item in scenarios] == ["悲观", "中性", "乐观"]
+    assert scenarios[0]["value_per_share"] == 36.0, scenarios
+    assert scenarios[0]["upside_pct"] == -51.4, scenarios
+    assert abs(scenarios[1]["value_per_share"] - 59.9) < 0.01, scenarios
+    assert scenarios[1]["upside_pct"] == -19.1, scenarios
+    assert scenarios[2]["value_per_share"] == 93.31, scenarios
+    assert scenarios[2]["upside_pct"] == 26.1, scenarios
+    assert result.data["assumptions"] == {
+        "base_value": 3.0,
+        "base_label": "EPS",
+        "years": 3,
+        "growth_pct": [0.0, 10.0, 20.0],
+        "exit_pe": [12.0, 15.0, 18.0],
+        "price": 74.0,
+    }, result.data["assumptions"]
+    assert result.sources[0].id == "valuation:605499:2026-10-23", result.sources
+    assert "不是目标价" in result.data["notes"][0], result.data
+
+    # 显式股价优先，且不再依赖估值数据
+    override = tools.run_tool(
+        "calc_valuation",
+        {
+            "mode": "scenario",
+            "price": 50,
+            "base_value": 3,
+            "growth_pct": [0, 10, 20],
+            "exit_pe": [12, 15, 18],
+        },
+        default_company="605499",
+    )
+    assert override.ok is True, override
+    assert override.data["assumptions"]["price"] == 50.0, override.data
+    assert override.sources == (), override.sources
+
+    # 缺参数、基准非正、年数越界都折成观察结果
+    for arguments, phrase in (
+        ({"mode": "scenario"}, "base_value"),
+        ({"mode": "scenario", "base_value": 3, "growth_pct": [1, 2],
+          "exit_pe": [1, 2, 3]}, "growth_pct"),
+        ({"mode": "scenario", "base_value": 0, "growth_pct": [1, 2, 3],
+          "exit_pe": [1, 2, 3]}, "基准每股价值"),
+        ({"mode": "scenario", "base_value": 3, "growth_pct": [1, 2, 3],
+          "exit_pe": [1, 2, 3], "years": 0}, "1–10"),
+        ({"mode": "unknown"}, "未知 mode"),
+    ):
+        broken = tools.run_tool(
+            "calc_valuation", arguments, default_company="605499"
+        )
+        assert broken.ok is False, (arguments, broken)
+        assert phrase in broken.error, (arguments, broken.error)
+
+
+def test_calc_valuation_terminal() -> None:
+    normal = tools.run_tool(
+        "calc_valuation",
+        {"mode": "terminal", "roic_pct": 20,
+         "terminal_g_pct": 2, "discount_rate_pct": 8},
+        default_company="605499",
+    )
+    assert normal.ok is True, normal
+    assert normal.data["terminal_pe"] == 15.0, normal.data
+    assert normal.data["payout_ratio_pct"] == 90.0, normal.data
+    assert normal.data["valid"] is True and normal.data["status"] == "pass", normal.data
+
+    narrow = tools.run_tool(
+        "calc_valuation",
+        {"mode": "terminal", "roic_pct": 20,
+         "terminal_g_pct": 2, "discount_rate_pct": 6},
+        default_company="605499",
+    )
+    assert narrow.data["terminal_pe"] == 22.5, narrow.data
+    assert narrow.data["status"] == "warn", narrow.data
+    assert any("r-g" in item for item in narrow.data["warnings"]), narrow.data
+
+    broken = tools.run_tool(
+        "calc_valuation",
+        {"mode": "terminal", "roic_pct": 2,
+         "terminal_g_pct": 2, "discount_rate_pct": 8},
+        default_company="605499",
+    )
+    assert broken.ok is True, broken
+    assert broken.data["valid"] is False, broken.data
+    assert broken.data["terminal_pe"] is None, broken.data
+    assert broken.data["status"] == "fail", broken.data
+
+    missing = tools.run_tool(
+        "calc_valuation",
+        {"mode": "terminal", "terminal_g_pct": 2, "discount_rate_pct": 8},
+        default_company="605499",
+    )
+    assert missing.ok is False and "roic_pct" in missing.error, missing
+
+
 def test_segments_kind_fallback_not_relabeled() -> None:
     """只有产品口径时，地区切片不能被回退出来的产品数据冒充。"""
     rows = [
@@ -465,6 +687,10 @@ def main() -> None:
     test_segments_region_missing()
     test_announcements_sources()
     test_valuation()
+    test_calc_valuation_check()
+    test_calc_valuation_check_edge_cases()
+    test_calc_valuation_scenario()
+    test_calc_valuation_terminal()
     test_segments_kind_fallback_not_relabeled()
     test_malformed_arguments_are_observations()
     test_tool_error_is_observation()

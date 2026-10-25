@@ -102,6 +102,9 @@ def test_valuation_skill() -> None:
         assert phrase in text, phrase
     assert "不给单一精确目标价" in text
     assert "不要输出 DCF 数字" in text
+    assert "calc_valuation" in text
+    for phrase in ("check", "scenario", "terminal"):
+        assert phrase in text, phrase
 
 
 def test_margin_of_safety_skill() -> None:
@@ -115,6 +118,7 @@ def test_margin_of_safety_skill() -> None:
     assert "只做条件式分析" in text
     assert "未加载 valuation 就自行编造估值区间" in text
     assert "load_skill" in text
+    assert "calc_valuation" in text
 
 
 def test_unknown_skill() -> None:

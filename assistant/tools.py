@@ -11,10 +11,12 @@
 from __future__ import annotations
 
 import copy
+import math
 
 from stock.announcements import build_announcements
 from stock.db_service import get_all_stocks, get_stock, get_stock_by_name
 from stock.finance_history import build_history
+from stock.finance_service import ensure_financials
 from stock.finance_snapshot import build_snapshot
 from stock.segments import ensure_segments, segments_from_rows
 from stock.utils import get_stock_prefix
@@ -23,6 +25,13 @@ from stock.valuation import build_valuation
 from .company_profile import build_profile
 from .models import Source, ToolResult
 from .skills import catalog, get_skill
+from .valuation_math import (
+    ValuationInputError,
+    compare,
+    fcf_yield,
+    scenario,
+    terminal_pe,
+)
 
 _COMPANY = {
     "type": "string",
@@ -159,6 +168,77 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "calc_valuation",
+            "description": (
+                "估值计算与校验：数字由代码用 Decimal 计算，假设原样回显。"
+                "check 用财报 TTM 反推 PE/PB 并与市值口径校验；"
+                "scenario 按明示假设算悲观/中性/乐观三档每股价值；"
+                "terminal 检查永续增长终值 PE 的假设是否自洽。"
+                "情景结果是假设的算术结果，不是目标价。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "company": _COMPANY,
+                    "mode": {
+                        "type": "string",
+                        "enum": ["check", "scenario", "terminal"],
+                        "description": "check=口径校验；scenario=三情景；terminal=终值 PE",
+                    },
+                    "price": {
+                        "type": "number",
+                        "description": "当前股价（元/股）；scenario 省略时用估值数据",
+                    },
+                    "base_value": {
+                        "type": "number",
+                        "description": "scenario 的基准每股价值，与 base_label 对应",
+                    },
+                    "base_label": {
+                        "type": "string",
+                        "enum": ["EPS", "FCF"],
+                        "description": "基准值口径：EPS=每股收益，FCF=每股自由现金流；默认 EPS",
+                    },
+                    "growth_pct": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "description": "悲观/中性/乐观三档年化增速（%）",
+                    },
+                    "exit_pe": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "description": "悲观/中性/乐观三档退出 PE",
+                    },
+                    "years": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10,
+                        "description": "情景年数，默认 3",
+                    },
+                    "roic_pct": {
+                        "type": "number",
+                        "description": "terminal：永续期 ROIC（%）",
+                    },
+                    "terminal_g_pct": {
+                        "type": "number",
+                        "description": "terminal：永续增速（%）",
+                    },
+                    "discount_rate_pct": {
+                        "type": "number",
+                        "description": "terminal：折现率（%）",
+                    },
+                },
+                "required": ["mode"],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 
@@ -248,6 +328,8 @@ def run_tool(
             return _announcements(code, arguments)
         if name == "get_valuation":
             return _valuation(code)
+        if name == "calc_valuation":
+            return _calc_valuation(code, arguments)
         return ToolResult(ok=False, company=code, error=f"未知工具：{name}")
     except Exception as error:  # noqa: BLE001 - 数据层异常统一交给模型处理
         return ToolResult(ok=False, company=code, error=str(error))
@@ -562,6 +644,334 @@ def _valuation(code: str) -> ToolResult:
         ],
     }
     return ToolResult(ok=True, company=code, as_of=as_of, sources=(source,), data=payload)
+
+
+# ---------------------------------------------------------------------------
+# 估值计算与校验
+# ---------------------------------------------------------------------------
+def _calc_valuation(code: str, arguments: dict) -> ToolResult:
+    mode = arguments.get("mode")
+    if not isinstance(mode, str) or not mode.strip():
+        return ToolResult(
+            ok=False, company=code,
+            error="calc_valuation 需要 mode：check / scenario / terminal",
+        )
+    mode = mode.strip().lower()
+    if mode == "check":
+        return _valuation_check(code)
+    if mode == "scenario":
+        return _valuation_scenario(code, arguments)
+    if mode == "terminal":
+        return _valuation_terminal(code, arguments)
+    return ToolResult(
+        ok=False, company=code,
+        error=f"未知 mode：{mode}；可用 check / scenario / terminal",
+    )
+
+
+def _valuation_check(code: str) -> ToolResult:
+    """用财报 TTM 反推 PE/PB，再与东财估值口径比对。"""
+    valuation = build_valuation(code)
+    if not valuation.get("available"):
+        return ToolResult(ok=False, company=code, error=f"{code}：没有估值数据，无法校验")
+
+    valuation_data = valuation.get("valuation") or {}
+    price_data = valuation.get("price") or {}
+    reported_pe = (valuation_data.get("pe_ttm") or {}).get("value")
+    reported_pb = (valuation_data.get("pb_mrq") or {}).get("value")
+    price = price_data.get("close")
+    market_cap = price_data.get("market_cap")
+    as_of = valuation.get("as_of") or ""
+    if market_cap is None:
+        return ToolResult(ok=False, company=code, error=f"{code}：估值数据缺少市值，无法校验")
+
+    rows = sorted(ensure_financials(code), key=lambda row: row["report_date"])
+    if not rows:
+        return ToolResult(ok=False, company=code, error=f"{code}：没有可用的财报数据")
+    latest = rows[-1]
+    period = latest["report_date"]
+    financial = latest.get("cost_of_revenue") is None
+
+    ttm_profit = _ttm(rows, ("net_profit_attributable", "net_profit"))
+    ttm_ocf = _ttm(rows, ("operating_cash_flow",))
+    ttm_capex = _ttm(rows, ("capex",))
+    ttm_fcf = (
+        ttm_ocf - ttm_capex
+        if ttm_ocf is not None and ttm_capex is not None
+        else None
+    )
+    equity = _field(latest, ("equity_parent", "total_equity"))
+
+    pe_implied = market_cap / ttm_profit if ttm_profit and ttm_profit > 0 else None
+    pb_implied = market_cap / equity if equity and equity > 0 else None
+    pe_check = compare("PE(TTM)", reported_pe, pe_implied)
+    pb_check = compare("PB(MRQ)", reported_pb, pb_implied)
+    yield_value = None if financial else fcf_yield(ttm_fcf, market_cap)
+
+    warnings: list[str] = []
+    for check in (pe_check, pb_check):
+        if check["status"] == "fail":
+            warnings.append(
+                f"{check['name']} 校验差异 {check['diff_pct']:+.2f}%，"
+                "可能是指标口径或财报未同步，引用前先核对"
+            )
+        elif check["status"] == "warn":
+            warnings.append(
+                f"{check['name']} 校验差异 {check['diff_pct']:+.2f}%，"
+                "注意 TTM/MRQ 口径"
+            )
+    if ttm_profit is not None and ttm_profit <= 0:
+        warnings.append("TTM 归母净利润为负，PE 不适用")
+    if financial:
+        warnings.append("金融机构：自由现金流收益率口径不可比，未计算")
+    elif ttm_fcf is None:
+        warnings.append("缺少经营现金流或资本开支，未计算自由现金流收益率")
+    minority = latest.get("minority_interest")
+    if minority:
+        warnings.append(f"PB 按归母净资产校验；少数股东权益 {_yi(minority)} 未计入")
+
+    data = {
+        "mode": "check",
+        "price": _round(price, 2),
+        "market_cap_yi": _yi(market_cap),
+        "valuation": {
+            "pe_ttm": reported_pe,
+            "pb_mrq": reported_pb,
+            "as_of": as_of,
+        },
+        "financials": {
+            "period": period,
+            "ttm_net_profit_yi": _yi(ttm_profit),
+            "equity_parent_yi": _yi(equity),
+            "ttm_fcf_yi": _yi(ttm_fcf),
+            "is_financial": financial,
+        },
+        "checks": [pe_check, pb_check],
+        "fcf_yield_pct": None if yield_value is None else round(float(yield_value), 2),
+        "warnings": warnings,
+        "notes": [
+            "PE/PB 用东财估值与新浪财报两套数据交叉校验；"
+            "差异可能来自 TTM/MRQ 口径或财报同步时点，不代表数据错误。"
+        ],
+    }
+
+    sources: list[Source] = []
+    name = valuation.get("name") or code
+    if as_of:
+        sources.append(Source(
+            id=f"valuation:{code}:{as_of}",
+            label="估值",
+            detail=f"{name} {as_of} 估值",
+            as_of=as_of,
+            fetched_at=valuation.get("fetched_at") or "",
+        ))
+    sources.append(Source(
+        id=f"finance:{code}:{period}",
+        label="财报",
+        detail=f"{name} {period} 财务快照",
+        as_of=period,
+        fetched_at=latest.get("fetched_at") or "",
+    ))
+    return ToolResult(
+        ok=True,
+        company=code,
+        as_of=as_of or period,
+        sources=tuple(sources),
+        data=data,
+    )
+
+
+def _valuation_scenario(code: str, arguments: dict) -> ToolResult:
+    price = _as_number(arguments.get("price"))
+    as_of = None
+    sources: list[Source] = []
+    warnings: list[str] = []
+    if price is None:
+        valuation = build_valuation(code)
+        if valuation.get("available"):
+            price = _as_number((valuation.get("price") or {}).get("close"))
+            as_of = valuation.get("as_of") or None
+            if price is not None and as_of:
+                sources.append(Source(
+                    id=f"valuation:{code}:{as_of}",
+                    label="估值",
+                    detail=f"{valuation.get('name') or code} {as_of} 估值",
+                    as_of=as_of,
+                    fetched_at=valuation.get("fetched_at") or "",
+                ))
+        if price is None:
+            warnings.append("没有当前股价，未计算相对当前价的空间")
+    elif price <= 0:
+        return ToolResult(ok=False, company=code, error="price 必须大于 0")
+
+    base_value = _as_number(arguments.get("base_value"))
+    if base_value is None:
+        return ToolResult(
+            ok=False, company=code,
+            error="scenario 需要 base_value（每股基准价值）",
+        )
+    base_label = arguments.get("base_label") or "EPS"
+    base_label = base_label.strip() if isinstance(base_label, str) else "EPS"
+    if not base_label:
+        base_label = "EPS"
+
+    growths = _as_numbers(arguments.get("growth_pct"))
+    if growths is None:
+        return ToolResult(
+            ok=False, company=code,
+            error="growth_pct 需要 3 个数字（悲观/中性/乐观）",
+        )
+    pes = _as_numbers(arguments.get("exit_pe"))
+    if pes is None:
+        return ToolResult(
+            ok=False, company=code,
+            error="exit_pe 需要 3 个数字（悲观/中性/乐观）",
+        )
+
+    years_raw = arguments.get("years")
+    if years_raw is None:
+        years = 3
+    else:
+        try:
+            years = int(years_raw)
+        except (TypeError, ValueError):
+            return ToolResult(ok=False, company=code, error="years 必须是整数")
+        if years < 1 or years > 10:
+            return ToolResult(
+                ok=False, company=code, error="years 需要在 1–10 之间"
+            )
+
+    labels = ("悲观", "中性", "乐观")
+    scenarios: list[dict] = []
+    for label, growth, pe in zip(labels, growths, pes):
+        try:
+            result = scenario(base_value, growth, pe, years, price)
+        except ValuationInputError as error:
+            return ToolResult(ok=False, company=code, error=str(error))
+        scenarios.append({
+            "label": label,
+            "growth_pct": growth,
+            "exit_pe": pe,
+            "future_base_per_share": _num(result["future_value"], 2),
+            "value_per_share": _num(result["future_price"], 2),
+            "upside_pct": _num(result["upside_pct"], 1),
+        })
+
+    if any(pe > 50 for pe in pes):
+        warnings.append("有退出 PE 高于 50 倍，确认假设依据，不要把它当成合理估值")
+    if any(growth > 30 for growth in growths):
+        warnings.append("有增速假设高于 30%，确认不是把历史增速线性外推")
+
+    data = {
+        "mode": "scenario",
+        "assumptions": {
+            "base_value": base_value,
+            "base_label": base_label,
+            "years": years,
+            "growth_pct": growths,
+            "exit_pe": pes,
+            "price": price,
+        },
+        "scenarios": scenarios,
+        "warnings": warnings,
+        "notes": [
+            "情景结果是明示假设下的算术结果，不是目标价，也不是买卖建议。",
+            "基准值与退出 PE 由调用方给出，工具不替你选择参数。",
+        ],
+    }
+    return ToolResult(
+        ok=True, company=code, as_of=as_of, sources=tuple(sources), data=data
+    )
+
+
+def _valuation_terminal(code: str, arguments: dict) -> ToolResult:
+    inputs: dict[str, float] = {}
+    for key in ("roic_pct", "terminal_g_pct", "discount_rate_pct"):
+        value = _as_number(arguments.get(key))
+        if value is None:
+            return ToolResult(
+                ok=False, company=code, error=f"terminal 需要 {key}"
+            )
+        inputs[key] = value
+
+    try:
+        result = terminal_pe(
+            inputs["roic_pct"],
+            inputs["terminal_g_pct"],
+            inputs["discount_rate_pct"],
+        )
+    except ValuationInputError as error:
+        return ToolResult(ok=False, company=code, error=str(error))
+
+    data = {
+        "mode": "terminal",
+        "inputs": inputs,
+        "terminal_pe": _num(result["terminal_pe"], 1),
+        "payout_ratio_pct": _num(result["payout_ratio_pct"], 1),
+        "valid": result["valid"],
+        "status": result["status"],
+        "checks": result["checks"],
+        "warnings": [
+            check["message"]
+            for check in result["checks"]
+            if check["status"] in ("warn", "fail")
+        ],
+        "notes": ["终值 PE 只用于检查永续增长假设是否自洽，不是目标价。"],
+    }
+    return ToolResult(ok=True, company=code, data=data)
+
+
+def _ttm(rows: list[dict], fields: tuple[str, ...]):
+    """最新报告期的 TTM 值：本期累计 + 上年年报 − 上年同期累计。
+
+    最新一期就是年报时，后两项相消，TTM 等于年报值。
+    """
+    latest = rows[-1]
+    period = latest["report_date"]
+    year = int(period[:4])
+    by_date = {row["report_date"]: row for row in rows}
+    previous_year_end = by_date.get(f"{year - 1}-12-31")
+    same_last_year = by_date.get(f"{year - 1}{period[4:]}")
+
+    current = _field(latest, fields)
+    annual = _field(previous_year_end, fields)
+    same_quarter = _field(same_last_year, fields)
+    if current is None or annual is None or same_quarter is None:
+        return None
+    return current + annual - same_quarter
+
+
+def _field(row: dict | None, fields: tuple[str, ...]):
+    if row is None:
+        return None
+    for name in fields:
+        value = row.get(name)
+        if value is not None:
+            return value
+    return None
+
+
+def _as_number(value) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _as_numbers(value) -> list[float] | None:
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        return None
+    numbers = [_as_number(item) for item in value]
+    if any(item is None for item in numbers):
+        return None
+    return numbers  # type: ignore[return-value]
+
+
+def _num(value, digits: int):
+    return None if value is None else round(float(value), digits)
 
 
 # ---------------------------------------------------------------------------
