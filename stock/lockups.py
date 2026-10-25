@@ -281,7 +281,7 @@ def format_lockups(
                 f"{counts['upcoming_events']} 批 / "
                 f"{_shares(counts.get('upcoming_shares'))} / "
                 f"{_amount(counts.get('upcoming_market_cap'))}"
-                "（市值按当前价估算）"
+                "（市值按参考价估算）"
             )
             lines.append(_next_text(data.get("next")))
         else:
@@ -506,7 +506,7 @@ def _notes(
         return notes
 
     notes.append("解禁不等于减持，股东是否卖出取决于意愿和减持规则")
-    notes.append("解禁数量按公告，市值按当前价估算，会随股价变化")
+    notes.append("解禁数量按公告，市值按披露参考价估算，会随股价变化")
     if future:
         notes.append(
             f"未来{ahead_months}个月有{len(future)}批解禁，"

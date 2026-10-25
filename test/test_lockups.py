@@ -185,7 +185,7 @@ def test_from_rows() -> None:
 
     notes = data["notes"]
     assert any("解禁不等于减持" in note for note in notes), notes
-    assert any("当前价" in note for note in notes), notes
+    assert any("参考价" in note for note in notes), notes
     assert any("未来12个月" in note for note in notes), notes
 
 
