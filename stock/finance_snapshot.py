@@ -244,6 +244,7 @@ def _metrics(latest: dict, last_year: dict | None) -> dict:
             "short_term_borrowings": latest.get("short_term_borrowings"),
         },
         "safety": _safety(latest, last_year),
+        "detail": _detail(latest, last_year),
     }
 
 
@@ -304,6 +305,47 @@ def _safety(latest: dict, last_year: dict | None) -> dict:
     if cash is not None and short_term:
         safety["cash_to_short_term_debt"] = round(cash / short_term, 2)
     return safety
+
+
+def _detail(latest: dict, last_year: dict | None) -> dict:
+    """报表里对研究有用、但不属于核心比率的明细科目。
+
+    数值保持数据源原始符号：投资收益、公允价值变动、减值损失可能是
+    负数。下游换算成亿元时不要把符号抹掉。
+    """
+    fields = (
+        "basic_eps",
+        "diluted_eps",
+        "equity_parent",
+        "minority_interest",
+        "total_equity",
+        "total_assets",
+        "total_liabilities",
+        "fixed_assets",
+        "construction_in_progress",
+        "intangible_assets",
+        "long_term_equity_invest",
+        "notes_payable",
+        "accounts_payable",
+        "advances_from_customers",
+        "contract_liabilities",
+        "investment_income",
+        "fair_value_change",
+        "asset_impairment",
+        "credit_impairment",
+        "treasury_stock",
+        "rd_expense",
+        "capex",
+    )
+    detail = {field: latest.get(field) for field in fields}
+    detail["fixed_assets_yoy"] = _growth(
+        latest.get("fixed_assets"), _value(last_year, "fixed_assets")
+    )
+    detail["construction_in_progress_yoy"] = _growth(
+        latest.get("construction_in_progress"),
+        _value(last_year, "construction_in_progress"),
+    )
+    return detail
 
 
 def _interest_coverage(row: dict) -> tuple[float | None, str | None]:

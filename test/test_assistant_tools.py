@@ -49,6 +49,32 @@ def fake_snapshot(code: str, **kwargs) -> dict:
                 "inventory_yoy": 9.1,
                 "cash_to_short_term_debt": 4.82,
             },
+            "detail": {
+                "basic_eps": 2.15,
+                "diluted_eps": 2.12,
+                "equity_parent": 8.0e9,
+                "minority_interest": 0.2e9,
+                "total_equity": 8.2e9,
+                "total_assets": 20.0e9,
+                "total_liabilities": 11.8e9,
+                "fixed_assets": 3.0e9,
+                "fixed_assets_yoy": 12.5,
+                "construction_in_progress": 1.0e9,
+                "construction_in_progress_yoy": 40.0,
+                "intangible_assets": 0.5e9,
+                "long_term_equity_invest": 0.3e9,
+                "notes_payable": 0.2e9,
+                "accounts_payable": 1.2e9,
+                "advances_from_customers": 0.1e9,
+                "contract_liabilities": 0.4e9,
+                "investment_income": -0.05e9,
+                "fair_value_change": 0.01e9,
+                "asset_impairment": -0.03e9,
+                "credit_impairment": -0.02e9,
+                "treasury_stock": 0.2e9,
+                "rd_expense": 0.4e9,
+                "capex": 0.8e9,
+            },
         },
         "trend": [
             {"report_date": "2026-03-31", "revenue_sq": 4848071704.63,
@@ -168,6 +194,31 @@ def test_finance_units_and_sources() -> None:
     assert result.data["inventory_yi"] == 6.0, result.data
     assert result.data["inventory_yoy"] == 9.1, result.data
     assert result.data["cash_to_short_term_debt"] == 4.82, result.data
+    # 报表明细：每股收益、权益、产能投入与营运资金科目
+    assert result.data["basic_eps"] == 2.15, result.data
+    assert result.data["diluted_eps"] == 2.12, result.data
+    assert result.data["equity_parent_yi"] == 80.0, result.data
+    assert result.data["minority_interest_yi"] == 2.0, result.data
+    assert result.data["total_equity_yi"] == 82.0, result.data
+    assert result.data["total_assets_yi"] == 200.0, result.data
+    assert result.data["total_liabilities_yi"] == 118.0, result.data
+    assert result.data["fixed_assets_yi"] == 30.0, result.data
+    assert result.data["fixed_assets_yoy"] == 12.5, result.data
+    assert result.data["construction_in_progress_yi"] == 10.0, result.data
+    assert result.data["construction_in_progress_yoy"] == 40.0, result.data
+    assert result.data["intangible_assets_yi"] == 5.0, result.data
+    assert result.data["long_term_equity_invest_yi"] == 3.0, result.data
+    assert result.data["notes_payable_yi"] == 2.0, result.data
+    assert result.data["accounts_payable_yi"] == 12.0, result.data
+    assert result.data["advances_from_customers_yi"] == 1.0, result.data
+    assert result.data["contract_liabilities_yi"] == 4.0, result.data
+    assert result.data["investment_income_yi"] == -0.5, result.data
+    assert result.data["fair_value_change_yi"] == 0.1, result.data
+    assert result.data["asset_impairment_yi"] == -0.3, result.data
+    assert result.data["credit_impairment_yi"] == -0.2, result.data
+    assert result.data["treasury_stock_yi"] == 2.0, result.data
+    assert result.data["rd_expense_yi"] == 4.0, result.data
+    assert result.data["capex_yi"] == 8.0, result.data
     source = result.sources[0]
     assert source.id == "finance:605499:2026-06-30"
     assert source.as_of == "2026-06-30"
@@ -199,6 +250,35 @@ def test_finance_without_safety() -> None:
                 "goodwill_yi", "goodwill_ratio", "accounts_receivable_yi",
                 "accounts_receivable_yoy", "inventory_yi", "inventory_yoy",
                 "cash_to_short_term_debt"):
+        assert result.data[key] is None, (key, result.data[key])
+
+
+def test_finance_without_detail() -> None:
+    """旧缓存或异常快照没有 detail 时，明细字段应为 None 而不是报错。"""
+    original = tools.build_snapshot
+
+    def bare_snapshot(code: str, **kwargs) -> dict:
+        snapshot = fake_snapshot(code, **kwargs)
+        snapshot["metrics"].pop("detail")
+        return snapshot
+
+    tools.build_snapshot = bare_snapshot  # type: ignore[assignment]
+    try:
+        result = tools.run_tool("get_finance", {}, default_company="600519")
+    finally:
+        tools.build_snapshot = original  # type: ignore[assignment]
+
+    assert result.ok is True, result
+    for key in (
+        "basic_eps", "diluted_eps", "equity_parent_yi", "minority_interest_yi",
+        "total_equity_yi", "total_assets_yi", "total_liabilities_yi",
+        "fixed_assets_yi", "fixed_assets_yoy", "construction_in_progress_yi",
+        "construction_in_progress_yoy", "intangible_assets_yi",
+        "long_term_equity_invest_yi", "notes_payable_yi", "accounts_payable_yi",
+        "advances_from_customers_yi", "contract_liabilities_yi",
+        "investment_income_yi", "fair_value_change_yi", "asset_impairment_yi",
+        "credit_impairment_yi", "treasury_stock_yi", "rd_expense_yi", "capex_yi",
+    ):
         assert result.data[key] is None, (key, result.data[key])
 
 
@@ -679,6 +759,7 @@ def main() -> None:
     test_resolve_company()
     test_finance_units_and_sources()
     test_finance_without_safety()
+    test_finance_without_detail()
     test_load_skill_tool()
     test_financial_history_tool()
     test_financial_history_missing()

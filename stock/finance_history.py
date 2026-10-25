@@ -107,6 +107,7 @@ def _year_row(row: dict) -> dict:
         "revenue_yoy": _round(row.get("revenue_yoy"), 1),
         "net_profit_yi": _yi(row.get("net_profit")),
         "net_profit_yoy": _round(row.get("net_profit_yoy"), 1),
+        "basic_eps": _round(row.get("basic_eps"), 3),
         "gross_margin": None if financial else _round(row.get("gross_margin"), 1),
         "net_margin": _round(row.get("net_margin"), 1),
         "roe": _round(row.get("roe"), 1),
@@ -118,8 +119,26 @@ def _year_row(row: dict) -> dict:
         "operating_cash_flow_yi": _yi(row.get("operating_cash_flow")),
         "capex_yi": _yi(row.get("capex")),
         "free_cash_flow_yi": _yi(row.get("free_cash_flow")),
+        "equity_parent_yi": _yi(row.get("equity_parent")),
+        "net_debt_yi": _yi(row.get("net_debt")),
+        "interest_debt_yi": None if financial else _yi(_interest_debt(row)),
+        "fixed_assets_yi": _yi(row.get("fixed_assets")),
+        "construction_in_progress_yi": _yi(row.get("construction_in_progress")),
         "debt_ratio": _round(row.get("debt_ratio"), 1),
     }
+
+
+def _interest_debt(row: dict) -> float | None:
+    """有息负债合计；科目全缺时返回 None，不用 0 冒充没有负债。"""
+    values = (
+        row.get("short_term_borrowings"),
+        row.get("current_portion_lt_debt"),
+        row.get("long_term_borrowings"),
+        row.get("bonds_payable"),
+        row.get("lease_liabilities"),
+    )
+    present = [value for value in values if value is not None]
+    return sum(present) if present else None
 
 
 def _yi(value) -> float | None:

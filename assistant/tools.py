@@ -100,7 +100,7 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "get_finance",
-            "description": "财务快照：营收/净利及同比、毛利率、净利率、ROE、负债率、现金流、有息负债、利息保障、商誉、应收/存货同比、单季趋势",
+            "description": "财务快照：营收/净利及同比、毛利率、净利率、ROE、负债率、现金流、有息负债、利息保障、商誉、应收/存货同比；另含每股收益、归母净资产、固定资产/在建工程、应付/合同负债、投资收益与减值、研发与资本开支、单季趋势",
             "parameters": {
                 "type": "object",
                 "properties": {"company": _COMPANY},
@@ -112,7 +112,7 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "get_financial_history",
-            "description": "年度财务序列：5–10 年的营收、净利、毛利率、净利率、费用率、ROE、现金流与负债率，用来看盈利能力能否持续",
+            "description": "年度财务序列：5–10 年的营收、净利、每股收益、毛利率、净利率、费用率、ROE、现金流、有息负债、固定资产/在建工程与负债率，用来看盈利能力能否持续",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -405,6 +405,7 @@ def _finance(code: str) -> ToolResult:
     profit = metrics.get("net_profit") or {}
     cash = metrics.get("cash") or {}
     safety = metrics.get("safety") or {}
+    detail = metrics.get("detail") or {}
     trend_rows = snapshot.get("trend") or []
     latest_trend = trend_rows[-1] if trend_rows else {}
 
@@ -437,6 +438,33 @@ def _finance(code: str) -> ToolResult:
         "inventory_yi": _yi(safety.get("inventory")),
         "inventory_yoy": _pct(safety.get("inventory_yoy")),
         "cash_to_short_term_debt": _round(safety.get("cash_to_short_term_debt"), 2),
+        # 报表明细：每股收益、权益、产能投入与营运资金科目
+        "basic_eps": _round(detail.get("basic_eps"), 3),
+        "diluted_eps": _round(detail.get("diluted_eps"), 3),
+        "equity_parent_yi": _yi(detail.get("equity_parent")),
+        "minority_interest_yi": _yi(detail.get("minority_interest")),
+        "total_equity_yi": _yi(detail.get("total_equity")),
+        "total_assets_yi": _yi(detail.get("total_assets")),
+        "total_liabilities_yi": _yi(detail.get("total_liabilities")),
+        "fixed_assets_yi": _yi(detail.get("fixed_assets")),
+        "fixed_assets_yoy": _pct(detail.get("fixed_assets_yoy")),
+        "construction_in_progress_yi": _yi(detail.get("construction_in_progress")),
+        "construction_in_progress_yoy": _pct(
+            detail.get("construction_in_progress_yoy")
+        ),
+        "intangible_assets_yi": _yi(detail.get("intangible_assets")),
+        "long_term_equity_invest_yi": _yi(detail.get("long_term_equity_invest")),
+        "notes_payable_yi": _yi(detail.get("notes_payable")),
+        "accounts_payable_yi": _yi(detail.get("accounts_payable")),
+        "advances_from_customers_yi": _yi(detail.get("advances_from_customers")),
+        "contract_liabilities_yi": _yi(detail.get("contract_liabilities")),
+        "investment_income_yi": _yi(detail.get("investment_income")),
+        "fair_value_change_yi": _yi(detail.get("fair_value_change")),
+        "asset_impairment_yi": _yi(detail.get("asset_impairment")),
+        "credit_impairment_yi": _yi(detail.get("credit_impairment")),
+        "treasury_stock_yi": _yi(detail.get("treasury_stock")),
+        "rd_expense_yi": _yi(detail.get("rd_expense")),
+        "capex_yi": _yi(detail.get("capex")),
         "trend": [
             {
                 "period": row.get("report_date"),

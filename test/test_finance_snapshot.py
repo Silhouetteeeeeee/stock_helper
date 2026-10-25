@@ -168,8 +168,76 @@ def test_safety_metrics() -> None:
     assert "weak_operating_cash_flow" not in codes(bank_history), codes(bank_history)
 
 
+def test_detail_fields() -> None:
+    """报表明细：每股收益、权益、投入资本与营运资金科目。"""
+    latest = row(
+        "2026-06-30", revenue=100 * E8,
+        basic_eps=2.15, diluted_eps=2.12,
+        equity_parent=80 * E8, minority_interest=2 * E8,
+        total_equity=82 * E8, total_assets=200 * E8,
+        total_liabilities=118 * E8,
+        fixed_assets=30 * E8, construction_in_progress=10 * E8,
+        intangible_assets=5 * E8, long_term_equity_invest=3 * E8,
+        notes_payable=2 * E8, accounts_payable=12 * E8,
+        advances_from_customers=1 * E8, contract_liabilities=4 * E8,
+        investment_income=-0.5 * E8, fair_value_change=0.1 * E8,
+        asset_impairment=-0.3 * E8, credit_impairment=-0.2 * E8,
+        treasury_stock=2 * E8, rd_expense=4 * E8, capex=8 * E8,
+    )
+    last_year = row(
+        "2025-06-30", fixed_assets=20 * E8, construction_in_progress=5 * E8,
+    )
+    detail = snap.snapshot_from_rows(
+        [last_year, latest], name="测试股份"
+    )["metrics"]["detail"]
+
+    assert detail["basic_eps"] == 2.15, detail
+    assert detail["diluted_eps"] == 2.12, detail
+    assert detail["equity_parent"] == 80 * E8, detail
+    assert detail["minority_interest"] == 2 * E8, detail
+    assert detail["total_equity"] == 82 * E8, detail
+    assert detail["total_assets"] == 200 * E8, detail
+    assert detail["total_liabilities"] == 118 * E8, detail
+    assert detail["fixed_assets"] == 30 * E8, detail
+    assert detail["fixed_assets_yoy"] == 50.0, detail
+    assert detail["construction_in_progress"] == 10 * E8, detail
+    assert detail["construction_in_progress_yoy"] == 100.0, detail
+    assert detail["intangible_assets"] == 5 * E8, detail
+    assert detail["long_term_equity_invest"] == 3 * E8, detail
+    assert detail["notes_payable"] == 2 * E8, detail
+    assert detail["accounts_payable"] == 12 * E8, detail
+    assert detail["advances_from_customers"] == 1 * E8, detail
+    assert detail["contract_liabilities"] == 4 * E8, detail
+    # 投资收益、公允价值变动和减值损失保留数据源符号
+    assert detail["investment_income"] == -0.5 * E8, detail
+    assert detail["fair_value_change"] == 0.1 * E8, detail
+    assert detail["asset_impairment"] == -0.3 * E8, detail
+    assert detail["credit_impairment"] == -0.2 * E8, detail
+    assert detail["treasury_stock"] == 2 * E8, detail
+    assert detail["rd_expense"] == 4 * E8, detail
+    assert detail["capex"] == 8 * E8, detail
+
+    # 上年同期缺失时同比留空，不能拿 0 当基数
+    partial = snap.snapshot_from_rows([
+        row("2026-06-30", revenue=100 * E8, fixed_assets=30 * E8),
+    ])["metrics"]["detail"]
+    assert partial["fixed_assets_yoy"] is None, partial
+    assert partial["construction_in_progress_yoy"] is None, partial
+    assert partial["basic_eps"] is None, partial
+
+    # 金融机构也有每股收益、权益和资产，明细不能像安全指标那样整组清空
+    bank = snap.snapshot_from_rows([
+        row("2026-06-30", revenue=100 * E8, cost_of_revenue=None,
+            basic_eps=5.0, equity_parent=500 * E8, total_assets=5000 * E8),
+    ])["metrics"]["detail"]
+    assert bank["basic_eps"] == 5.0, bank
+    assert bank["equity_parent"] == 500 * E8, bank
+    assert bank["total_assets"] == 5000 * E8, bank
+
+
 def main() -> None:
     test_safety_metrics()
+    test_detail_fields()
 
     snapshot = snap.snapshot_from_rows(HISTORY, name="东鹏饮料")
     assert snapshot["available"] is True

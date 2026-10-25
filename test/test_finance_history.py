@@ -20,12 +20,20 @@ def test_history_from_rows() -> None:
          "net_profit": 20e8, "gross_margin": 45.0, "net_margin": 20.0,
          "roe": 30.0, "selling_expense": 15e8, "admin_expense": 5e8,
          "rd_expense": 1e8, "ocf_to_net_profit": 1.2, "debt_ratio": 40.0,
+         "basic_eps": 2.0, "equity_parent": 70e8, "net_debt": 10e8,
+         "short_term_borrowings": 5e8, "long_term_borrowings": 15e8,
+         "fixed_assets": 25e8, "construction_in_progress": 3e8,
          "fetched_at": "2026-10-24 15:00:00"},
         {"report_date": "2025-12-31", "revenue": 120e8, "revenue_yoy": 20.0,
          "net_profit": 25e8, "gross_margin": 46.0, "net_margin": 20.8,
          "roe": 32.0, "selling_expense": 16e8, "admin_expense": 6e8,
          "rd_expense": 1.2e8, "ocf_to_net_profit": 1.1, "debt_ratio": 42.0,
          "operating_cash_flow": 30e8, "capex": 8e8, "free_cash_flow": 22e8,
+         "basic_eps": 2.5, "equity_parent": 80e8, "net_debt": -5e8,
+         "short_term_borrowings": 2e8, "current_portion_lt_debt": 1e8,
+         "long_term_borrowings": 3e8, "bonds_payable": 4e8,
+         "lease_liabilities": 0.5e8,
+         "fixed_assets": 30e8, "construction_in_progress": 5e8,
          "fetched_at": "2026-10-24 15:00:00"},
         {"report_date": "2026-03-31", "revenue": 35e8, "gross_margin": 47.0},
     ]
@@ -39,6 +47,13 @@ def test_history_from_rows() -> None:
     assert latest["operating_cash_flow_yi"] == 30.0, latest
     assert latest["capex_yi"] == 8.0, latest
     assert latest["free_cash_flow_yi"] == 22.0, latest
+    assert latest["basic_eps"] == 2.5, latest
+    assert latest["equity_parent_yi"] == 80.0, latest
+    assert latest["net_debt_yi"] == -5.0, latest
+    # 短期借款 2 + 一年内到期 1 + 长期借款 3 + 应付债券 4 + 租赁负债 0.5
+    assert latest["interest_debt_yi"] == 10.5, latest
+    assert latest["fixed_assets_yi"] == 30.0, latest
+    assert latest["construction_in_progress_yi"] == 5.0, latest
     assert data["span"] == "2024-2025"
     assert data["as_of"] == "2025-12-31"
     assert data["fetched_at"] == "2026-10-24 15:00:00"
@@ -73,6 +88,19 @@ def test_history_edge_cases() -> None:
     row = history_from_rows(burning)["years"][0]
     assert row["free_cash_flow_yi"] == -6.0, row
     assert row["capex_yi"] == 9.0, row
+
+    # 金融机构没有可比的"有息负债"口径；科目全缺时也不能用 0 冒充没有负债
+    bank = history_from_rows([{
+        "report_date": "2025-12-31", "revenue": 100e8,
+        "cost_of_revenue": None, "short_term_borrowings": 500e8,
+    }])["years"][0]
+    assert bank["interest_debt_yi"] is None, bank
+    bare = history_from_rows([{
+        "report_date": "2025-12-31", "revenue": 100e8,
+        "cost_of_revenue": 60e8,
+    }])["years"][0]
+    assert bare["interest_debt_yi"] is None, bare
+    assert bare["net_debt_yi"] is None, bare
 
     # 中间缺一年要写进 notes，不能悄悄压缩成连续四年
     gappy = history_from_rows([
