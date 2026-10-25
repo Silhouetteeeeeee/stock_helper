@@ -146,7 +146,7 @@ def test_schemas() -> None:
     assert names == [
         "load_skill", "resolve_company", "get_company_profile", "get_finance",
         "get_financial_history", "get_segments", "get_management",
-        "get_announcements",
+        "get_shareholders", "get_announcements",
         "get_valuation", "calc_valuation",
     ], names
     for item in tools.schemas():
@@ -551,6 +551,70 @@ def test_management_tool() -> None:
     assert result.data["groups"][1]["members"][0]["resume"] is None, result.data
 
 
+def test_shareholders_tool() -> None:
+    data = {
+        "available": True, "code": "605499", "name": "东鹏饮料",
+        "as_of": "2026-06-30", "fetched_at": "2026-10-25 10:00:00",
+        "stale": False,
+        "controller": {"name": "林木勤", "ratio": 45.8235},
+        "top10": [{
+            "period": "2026-06-30", "rank": 1, "name": "林木勤",
+            "share_type": "流通A股,限售流通A股", "shares": 343422644.12,
+            "ratio": 45.8235, "change": None, "change_text": "不变",
+            "change_ratio": None,
+        }],
+        "free_float_top10": [{
+            "period": "2026-06-30", "rank": 1, "name": "林木勤",
+            "share_type": "流通A股", "shares": 336435820.81,
+            "ratio": 45.0, "change": 1234567, "change_text": None,
+            "change_ratio": 2.12, "holder_type": "个人",
+        }],
+        "holder_count": {
+            "latest": {
+                "period": "2026-06-30", "holders": 46264,
+                "holders_change_pct": 52.42, "avg_free_shares": 15304,
+                "avg_free_shares_change_pct": -34.4, "focus": "非常分散",
+                "top10_ratio": 66.5, "free_float_top10_ratio": 55.2,
+            },
+            "history": [{
+                "period": "2026-06-30", "holders": 46264,
+                "holders_change_pct": 52.42, "avg_free_shares": 15304,
+                "avg_free_shares_change_pct": -34.4, "focus": "非常分散",
+                "top10_ratio": 66.5, "free_float_top10_ratio": 55.2,
+            }],
+        },
+        "counts": {"top10": 1, "free_float_top10": 1, "holder_periods": 1},
+    }
+    original = tools.build_shareholders
+    tools.build_shareholders = lambda code, **kwargs: data  # type: ignore[assignment]
+    try:
+        result = tools.run_tool(
+            "get_shareholders", {"periods": 4}, default_company="605499"
+        )
+    finally:
+        tools.build_shareholders = original  # type: ignore[assignment]
+
+    assert result.ok is True, result
+    assert result.as_of == "2026-06-30", result
+    assert result.sources[0].id == "shareholders:605499:2026-06-30", result.sources
+    assert result.sources[0].url == (
+        "https://emweb.securities.eastmoney.com/PC_HSF10/ShareholderResearch/"
+        "Index?type=web&code=SH605499"
+    ), result.sources
+    assert result.data["controller"] == {"name": "林木勤", "ratio": 45.8}, result.data
+    top = result.data["top10"][0]
+    assert top["shares_wan"] == 34342.26, top
+    assert top["ratio"] == 45.8 and top["change_text"] == "不变", top
+    free = result.data["free_float_top10"][0]
+    assert free["holder_type"] == "个人", free
+    assert free["change_wan"] == 123.46 and free["change_ratio"] == 2.1, free
+    latest = result.data["holder_count"]["latest"]
+    assert latest["holders"] == 46264, latest
+    assert latest["holders_change_pct"] == 52.4, latest
+    assert latest["avg_free_shares"] == 15304, latest
+    assert result.data["counts"]["holder_periods"] == 1, result.data
+
+
 def test_segments_region_missing() -> None:
     global REGION
     REGION = False
@@ -892,6 +956,7 @@ def main() -> None:
     test_profile_tool()
     test_segments_two_slices()
     test_management_tool()
+    test_shareholders_tool()
     test_segments_region_missing()
     test_announcements_sources()
     test_valuation()

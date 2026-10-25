@@ -26,6 +26,8 @@ from stock.finance_snapshot import (
 from stock.management import PAGE_URL as MANAGEMENT_URL
 from stock.management import build_management
 from stock.segments import ensure_segments, segments_from_rows
+from stock.shareholders import PAGE_URL as SHAREHOLDER_URL
+from stock.shareholders import build_shareholders
 from stock.utils import get_stock_prefix
 from stock.valuation import build_valuation
 
@@ -174,6 +176,27 @@ TOOL_SCHEMAS: list[dict] = [
                     "resume_chars": {
                         "type": "integer",
                         "description": "每人简历截断字数，0-2000，默认 300；0 表示不返回简历",
+                    },
+                    "company": _COMPANY,
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_shareholders",
+            "description": (
+                "股东结构：实控人、十大股东、十大流通股东（比例为占流通股比例），"
+                "以及最近若干期股东户数与户均持股变化，用来看筹码集中还是分散"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "periods": {
+                        "type": "integer",
+                        "description": "股东户数回看期数，1-10，默认 8",
                     },
                     "company": _COMPANY,
                 },
@@ -369,6 +392,8 @@ def run_tool(
             return _segments(code, arguments)
         if name == "get_management":
             return _management(code, arguments)
+        if name == "get_shareholders":
+            return _shareholders(code, arguments)
         if name == "get_announcements":
             return _announcements(code, arguments)
         if name == "get_valuation":
@@ -743,6 +768,72 @@ def _management(code: str, arguments: dict) -> ToolResult:
             "count": data.get("count"),
             "stale": data.get("stale", False),
             "groups": groups,
+        },
+    )
+
+
+def _shareholders(code: str, arguments: dict) -> ToolResult:
+    try:
+        periods = int(arguments.get("periods", 8))
+    except (TypeError, ValueError):
+        periods = 8
+    periods = min(max(periods, 1), 10)
+
+    data = build_shareholders(code, periods=periods)
+    top10 = [_holder_row(item) for item in data.get("top10") or []]
+    free_top10 = [
+        _holder_row(item, free_float=True)
+        for item in data.get("free_float_top10") or []
+    ]
+    if not data.get("available") or (not top10 and not free_top10):
+        return ToolResult(ok=False, company=code, error=f"{code}：没有股东结构数据")
+
+    holder_count = data.get("holder_count") or {}
+    history = [
+        _holder_count_row(item)
+        for item in holder_count.get("history") or []
+    ]
+    controller = data.get("controller") or {}
+
+    name = data.get("name")
+    as_of = data.get("as_of") or ""
+    prefix, digits = get_stock_prefix(code)
+    source = Source(
+        id=f"shareholders:{code}:{as_of}" if as_of else f"shareholders:{code}",
+        label="股东结构",
+        detail=f"{name or code} {as_of}".strip(),
+        as_of=as_of,
+        fetched_at=data.get("fetched_at") or "",
+        url=SHAREHOLDER_URL.format(code=f"{prefix}{digits}"),
+    )
+    return ToolResult(
+        ok=True,
+        company=code,
+        as_of=as_of,
+        sources=(source,),
+        data={
+            "code": code,
+            "name": name,
+            "as_of": as_of,
+            "stale": data.get("stale", False),
+            "controller": (
+                {
+                    "name": controller.get("name"),
+                    "ratio": _pct(controller.get("ratio")),
+                }
+                if controller.get("name") else None
+            ),
+            "top10": top10,
+            "free_float_top10": free_top10,
+            "holder_count": {
+                "latest": history[-1] if history else None,
+                "history": history,
+            },
+            "counts": {
+                "top10": len(top10),
+                "free_float_top10": len(free_top10),
+                "holder_periods": len(history),
+            },
         },
     )
 
@@ -1194,13 +1285,49 @@ def _money_detail(values, fields) -> dict:
 
 
 def _pct(value):
-    """百分比保留一位。"""
-    return None if value is None else round(value, 1)
+    """百分比保留一位；加 0.0 把 -0.0 归一成 0.0。"""
+    return None if value is None else round(value, 1) + 0.0
 
 
 def _wan(value):
     """元 -> 万元，保留两位；薪酬和持股数用这个口径比"亿"更易读。"""
     return None if value is None else round(value / 1e4, 2)
+
+
+def _holder_row(item: dict, free_float: bool = False) -> dict:
+    """十大股东的一行：股数换成万股，比例保留一位。"""
+    row = {
+        "rank": item.get("rank"),
+        "name": item.get("name"),
+        "share_type": item.get("share_type"),
+        "shares_wan": _wan(item.get("shares")),
+        "ratio": _pct(item.get("ratio")),
+        "change_wan": _wan(item.get("change")),
+        "change_text": item.get("change_text"),
+        "change_ratio": _pct(item.get("change_ratio")),
+    }
+    if free_float:
+        row["holder_type"] = item.get("holder_type")
+    return row
+
+
+def _holder_count_row(item: dict) -> dict:
+    """股东户数的一期：户数和户均持股保持原单位。"""
+    avg_free_shares = item.get("avg_free_shares")
+    return {
+        "period": item.get("period"),
+        "holders": item.get("holders"),
+        "holders_change_pct": _pct(item.get("holders_change_pct")),
+        "avg_free_shares": (
+            None if avg_free_shares is None else int(round(avg_free_shares))
+        ),
+        "avg_free_shares_change_pct": _pct(
+            item.get("avg_free_shares_change_pct")
+        ),
+        "focus": item.get("focus"),
+        "top10_ratio": _pct(item.get("top10_ratio")),
+        "free_float_top10_ratio": _pct(item.get("free_float_top10_ratio")),
+    }
 
 
 def _company_text(value) -> tuple[str, str | None]:
