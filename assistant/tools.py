@@ -14,6 +14,7 @@ import copy
 import math
 
 from stock.announcements import build_announcements
+from stock.buybacks import build_buybacks
 from stock.db_service import get_all_stocks, get_stock, get_stock_by_name
 from stock.dividends import PAGE_URL as DIVIDEND_URL
 from stock.dividends import build_dividends
@@ -279,6 +280,28 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "get_buybacks",
+            "description": (
+                "股票回购：按计划列公告日、进度、计划金额/股数/价格区间、"
+                "已回购金额/股数与完成度，并区分注销、员工持股/股权激励；"
+                "按公告年度汇总。只含已披露回购计划"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "years": {
+                        "type": "integer",
+                        "description": "回看年数，1-10，默认 5",
+                    },
+                    "company": _COMPANY,
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_announcements",
             "description": "近期公告：带标签的事件（回购、减持、重大合同等）",
             "parameters": {
@@ -472,6 +495,8 @@ def run_tool(
             return _dividends(code, arguments)
         if name == "get_insider_trades":
             return _insider_trades(code, arguments)
+        if name == "get_buybacks":
+            return _buybacks(code, arguments)
         if name == "get_announcements":
             return _announcements(code, arguments)
         if name == "get_valuation":
@@ -1062,6 +1087,52 @@ def _insider_trades(code: str, arguments: dict) -> ToolResult:
     )
 
 
+def _buybacks(code: str, arguments: dict) -> ToolResult:
+    try:
+        years = int(arguments.get("years", 5))
+    except (TypeError, ValueError):
+        years = 5
+    years = min(max(years, 1), 10)
+
+    data = build_buybacks(code, years=years)
+    plans = [_buyback_plan(item) for item in data.get("plans") or []]
+    annual = [_buyback_year(item) for item in data.get("annual") or []]
+    latest = _buyback_plan(data["latest"]) if data.get("latest") else None
+
+    name = data.get("name")
+    as_of = data.get("as_of") or ""
+    source = Source(
+        id=f"buybacks:{code}:{as_of}" if as_of else f"buybacks:{code}",
+        label="股票回购",
+        detail=f"{name or code} 股票回购 {as_of}".strip(),
+        as_of=as_of,
+        fetched_at=data.get("fetched_at") or "",
+        url=data.get("url") or "",
+    )
+    return ToolResult(
+        ok=True,
+        company=code,
+        as_of=as_of or None,
+        sources=(source,),
+        data={
+            "code": code,
+            "name": name,
+            "as_of": as_of or None,
+            "window_start": data.get("window_start"),
+            "window_end": data.get("window_end"),
+            "years": data.get("years", years),
+            "has_buybacks": data.get("has_buybacks", False),
+            "latest": latest,
+            "annual": annual,
+            "plans": plans,
+            "plans_truncated": data.get("plans_truncated", 0),
+            "counts": _buyback_counts(data.get("counts") or {}),
+            "notes": data.get("notes") or [],
+            "stale": data.get("stale", False),
+        },
+    )
+
+
 def _announcements(code: str, arguments: dict) -> ToolResult:
     try:
         days = int(arguments.get("days") or 180)
@@ -1516,6 +1587,102 @@ def _pct(value):
 def _wan(value):
     """元 -> 万元，保留两位；薪酬和持股数用这个口径比"亿"更易读。"""
     return None if value is None else round(value / 1e4, 2)
+
+
+def _buyback_plan(item: dict) -> dict:
+    """回购计划一行：金额换亿元，股数换万股，价格与比例保留两位。"""
+    item = item or {}
+    return {
+        "plan_id": item.get("plan_id"),
+        "announce_date": item.get("announce_date"),
+        "year": item.get("year"),
+        "status": item.get("status"),
+        "progress_code": item.get("progress_code"),
+        "is_active": item.get("is_active", False),
+        "pending": item.get("pending", False),
+        "completed": item.get("completed", False),
+        "stopped": item.get("stopped", False),
+        "start_date": item.get("start_date"),
+        "end_date": item.get("end_date"),
+        "update_date": item.get("update_date"),
+        "finish_date": item.get("finish_date"),
+        "advanced_date": item.get("advanced_date"),
+        "planned_amount_low_yi": _yi(item.get("planned_amount_low")),
+        "planned_amount_high_yi": _yi(item.get("planned_amount_high")),
+        "planned_shares_low_wan": _wan(item.get("planned_shares_low")),
+        "planned_shares_high_wan": _wan(item.get("planned_shares_high")),
+        "planned_price_low": _round(item.get("planned_price_low"), 2),
+        "planned_price_high": _round(item.get("planned_price_high"), 2),
+        "planned_ratio_low_pct": _round(item.get("planned_ratio_low_pct"), 2),
+        "planned_ratio_high_pct": _round(item.get("planned_ratio_high_pct"), 2),
+        "actual_amount_yi": _yi(item.get("actual_amount")),
+        "actual_shares_wan": _wan(item.get("actual_shares")),
+        "actual_price_low": _round(item.get("actual_price_low"), 2),
+        "actual_price_high": _round(item.get("actual_price_high"), 2),
+        "actual_ratio_total_pct": _round(
+            item.get("actual_ratio_total_pct"), 2
+        ),
+        "actual_ratio_float_pct": _round(
+            item.get("actual_ratio_float_pct"), 2
+        ),
+        "amount_completion_pct": _round(
+            item.get("amount_completion_pct"), 1
+        ),
+        "shares_completion_pct": _round(
+            item.get("shares_completion_pct"), 1
+        ),
+        "purpose": item.get("purpose"),
+        "purpose_short": item.get("purpose_short"),
+        "purpose_tags": item.get("purpose_tags") or [],
+        "cancel": item.get("cancel", False),
+        "incentive": item.get("incentive", False),
+    }
+
+
+def _buyback_year(item: dict) -> dict:
+    """年度回购汇总：金额换亿元，股数换万股。"""
+    item = item or {}
+    return {
+        "year": item.get("year"),
+        "plans": item.get("plans"),
+        "active": item.get("active"),
+        "pending": item.get("pending"),
+        "completed": item.get("completed"),
+        "stopped": item.get("stopped"),
+        "actual_amount_yi": _yi(item.get("actual_amount")),
+        "actual_shares_wan": _wan(item.get("actual_shares")),
+        "planned_amount_low_yi": _yi(item.get("planned_amount_low")),
+        "planned_amount_high_yi": _yi(item.get("planned_amount_high")),
+        "completion_pct": _round(item.get("completion_pct"), 1),
+        "cancel_plans": item.get("cancel_plans"),
+        "incentive_plans": item.get("incentive_plans"),
+        "amount_complete": item.get("amount_complete", True),
+    }
+
+
+def _buyback_counts(item: dict) -> dict:
+    """回购总览：金额换亿元，股数换万股。"""
+    item = item or {}
+    return {
+        "plans": item.get("plans", 0),
+        "active": item.get("active", 0),
+        "pending": item.get("pending", 0),
+        "completed": item.get("completed", 0),
+        "stopped": item.get("stopped", 0),
+        "cancel_plans": item.get("cancel_plans", 0),
+        "incentive_plans": item.get("incentive_plans", 0),
+        "actual_amount_yi": _yi(item.get("actual_amount")),
+        "actual_shares_wan": _wan(item.get("actual_shares")),
+        "planned_amount_low_yi": _yi(item.get("planned_amount_low")),
+        "planned_amount_high_yi": _yi(item.get("planned_amount_high")),
+        "completion_pct": _round(item.get("completion_pct"), 1),
+        "missing_actual": item.get("missing_actual", 0),
+        "amount_complete": item.get("amount_complete", True),
+        "planned_amount_complete": item.get(
+            "planned_amount_complete", True
+        ),
+        "latest_update": item.get("latest_update"),
+    }
 
 
 def _holder_row(item: dict, free_float: bool = False) -> dict:

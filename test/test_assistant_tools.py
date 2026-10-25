@@ -147,7 +147,7 @@ def test_schemas() -> None:
         "load_skill", "resolve_company", "get_company_profile", "get_finance",
         "get_financial_history", "get_segments", "get_management",
         "get_shareholders", "get_peers", "get_dividends", "get_insider_trades",
-        "get_announcements",
+        "get_buybacks", "get_announcements",
         "get_valuation", "calc_valuation",
     ], names
     for item in tools.schemas():
@@ -897,6 +897,117 @@ def test_insider_trades_tool() -> None:
     assert result.data["notes"] == ["持股计划/其他组织单列，金额不代表个人增持"], result.data
 
 
+def test_buybacks_tool() -> None:
+    latest = {
+        "plan_id": "15569", "announce_date": "2026-04-02", "year": 2026,
+        "status": "实施中", "progress_code": "004", "is_active": True,
+        "pending": False, "completed": False, "stopped": False,
+        "start_date": "2026-04-30", "end_date": "2027-04-29",
+        "update_date": "2026-09-18", "finish_date": None,
+        "advanced_date": None,
+        "planned_amount_low": 1_000_000_000,
+        "planned_amount_high": 2_000_000_000,
+        "planned_shares_low": 5_000_000, "planned_shares_high": 10_000_000,
+        "planned_price_low": 134.2, "planned_price_high": 185.88,
+        "planned_ratio_low_pct": 0.95257, "planned_ratio_high_pct": 1.90514,
+        "actual_amount": 1_038_719_867.57, "actual_shares": 7_122_551,
+        "actual_price_low": 134.2, "actual_price_high": 154.9,
+        "actual_ratio_total_pct": 1.42885,
+        "actual_ratio_float_pct": 1.55183,
+        "amount_completion_pct": 103.9, "shares_completion_pct": 142.5,
+        "purpose": "不低于90%用于注销，剩余用于股权激励",
+        "purpose_short": "不低于90%用于注销，剩余用于股权激励",
+        "purpose_tags": ["注销", "股权激励"],
+        "cancel": True, "incentive": True,
+    }
+    annual = {
+        "year": 2026, "plans": 2, "active": 1, "pending": 1,
+        "completed": 0, "stopped": 0,
+        "actual_amount": 1_038_719_867.57, "actual_shares": 7_122_551,
+        "planned_amount_low": 1_500_000_000,
+        "planned_amount_high": 3_000_000_000,
+        "completion_pct": 69.2, "cancel_plans": 1,
+        "incentive_plans": 1, "amount_complete": True,
+    }
+    counts = {
+        "plans": 4, "active": 2, "pending": 1, "completed": 1, "stopped": 1,
+        "cancel_plans": 4, "incentive_plans": 1,
+        "actual_amount": 4_438_646_984.14, "actual_shares": 11_188_165,
+        "planned_amount_low": 4_900_000_000.0,
+        "planned_amount_high": 6_400_000_000.0,
+        "completion_pct": 90.6, "missing_actual": 1,
+        "amount_complete": False, "planned_amount_complete": True,
+        "latest_update": "2026-09-18",
+    }
+    data = {
+        "available": True, "code": "605499", "name": "东鹏饮料",
+        "as_of": "2026-09-18", "fetched_at": "2026-10-25 10:00:00",
+        "stale": False, "window_start": "2022-01-01",
+        "window_end": "2026-10-25", "years": 5, "has_buybacks": True,
+        "latest": latest, "annual": [annual], "plans": [latest],
+        "plans_truncated": 0, "counts": counts,
+        "notes": ["用于注销的回购减少总股本"],
+        "url": "https://data.eastmoney.com/gphg/detail/605499-2026-04-02.html",
+    }
+    captured = {}
+
+    def fake_build(code: str, **kwargs) -> dict:
+        captured.update(kwargs)
+        return data
+
+    original = tools.build_buybacks
+    tools.build_buybacks = fake_build  # type: ignore[assignment]
+    try:
+        result = tools.run_tool(
+            "get_buybacks", {"years": 99}, default_company="605499"
+        )
+    finally:
+        tools.build_buybacks = original  # type: ignore[assignment]
+
+    assert captured["years"] == 10, captured
+    assert result.ok is True, result
+    assert result.as_of == "2026-09-18", result
+    assert result.sources[0].id == "buybacks:605499:2026-09-18", result.sources
+    assert result.sources[0].label == "股票回购", result.sources
+    assert result.sources[0].url == (
+        "https://data.eastmoney.com/gphg/detail/605499-2026-04-02.html"
+    ), result.sources
+    assert result.sources[0].detail == "东鹏饮料 股票回购 2026-09-18", result.sources
+
+    plan = result.data["latest"]
+    assert plan["status"] == "实施中", plan
+    assert plan["planned_amount_low_yi"] == 10.0, plan
+    assert plan["planned_amount_high_yi"] == 20.0, plan
+    assert plan["planned_shares_low_wan"] == 500.0, plan
+    assert plan["planned_shares_high_wan"] == 1000.0, plan
+    assert plan["planned_ratio_low_pct"] == 0.95, plan
+    assert plan["actual_amount_yi"] == 10.39, plan
+    assert plan["actual_shares_wan"] == 712.26, plan
+    assert plan["actual_ratio_total_pct"] == 1.43, plan
+    assert plan["amount_completion_pct"] == 103.9, plan
+    assert plan["shares_completion_pct"] == 142.5, plan
+    assert plan["cancel"] is True and plan["incentive"] is True, plan
+
+    year = result.data["annual"][0]
+    assert year["actual_amount_yi"] == 10.39, year
+    assert year["planned_amount_low_yi"] == 15.0, year
+    assert year["completion_pct"] == 69.2, year
+    assert year["cancel_plans"] == 1, year
+
+    counts = result.data["counts"]
+    assert counts["actual_amount_yi"] == 44.39, counts
+    assert counts["actual_shares_wan"] == 1118.82, counts
+    assert counts["planned_amount_low_yi"] == 49.0, counts
+    assert counts["planned_amount_high_yi"] == 64.0, counts
+    assert counts["completion_pct"] == 90.6, counts
+    assert counts["missing_actual"] == 1, counts
+    assert counts["amount_complete"] is False, counts
+    assert result.data["window_start"] == "2022-01-01", result.data
+    assert result.data["window_end"] == "2026-10-25", result.data
+    assert result.data["has_buybacks"] is True, result.data
+    assert result.data["notes"] == ["用于注销的回购减少总股本"], result.data
+
+
 def test_segments_region_missing() -> None:
     global REGION
     REGION = False
@@ -1242,6 +1353,7 @@ def main() -> None:
     test_peers_tool()
     test_dividends_tool()
     test_insider_trades_tool()
+    test_buybacks_tool()
     test_segments_region_missing()
     test_announcements_sources()
     test_valuation()
