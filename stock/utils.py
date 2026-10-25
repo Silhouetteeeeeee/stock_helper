@@ -5,6 +5,7 @@ import re
 import threading
 import time as _time  # 下面 from datetime import time 会占用 time 这个名字
 import traceback
+from dataclasses import dataclass, field
 import requests
 import akshare as ak
 
@@ -254,16 +255,14 @@ XUEQIU_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0"
 )
 XUEQIU_ARTICLES = 10
-XUEQIU_COMMENTS = 10
+# 评论一次要 100 条（接口实际封顶 50），够按原结构搭树，不用翻页
+XUEQIU_COMMENTS = 100
 XUEQIU_TIMEOUT = 15
 # 一次取 10 篇文章要发 11 个请求，不压节奏很容易吃"操作过于频繁"
 XUEQIU_REQUEST_INTERVAL = 0.6
 # 评论接口的配额很紧，被限频后等一会儿再试，别让整批取数直接失败
 XUEQIU_RATE_LIMIT_WAIT = 20
 XUEQIU_RATE_LIMIT_RETRIES = 3
-# 接口把楼中楼回复混在列表里，一页 20 条要翻几页才够 10 条顶层评论
-_COMMENT_PAGE_SIZE = 20
-_COMMENT_MAX_PAGES = 1
 # 雪球的限频错误码
 _RATE_LIMIT_CODE = 110017
 
@@ -283,18 +282,44 @@ class XueqiuRateLimitError(XueqiuError):
     """请求太密被雪球限频，等一会儿再试。"""
 
 
+@dataclass
+class Comment:
+    """一条雪球评论。顶层评论的 ``children`` 里挂楼中楼回复。"""
+
+    id: int
+    author: str | None
+    author_id: int | None
+    content: str
+    created_at: str | None
+    like_count: int
+    reply_count: int
+    ip_location: str | None
+    reply_to_comment_id: int | None = None
+    reply_to_author: str | None = None
+    children: list["ChildComment"] = field(default_factory=list)
+
+    @property
+    def is_reply(self) -> bool:
+        return self.reply_to_comment_id is not None
+
+
+@dataclass
+class ChildComment(Comment):
+    """楼中楼回复，挂在父评论的 ``children`` 里。"""
+
+
 def get_xueqiu_articles(
     code: str,
     article_count: int = XUEQIU_ARTICLES,
     comment_count: int = XUEQIU_COMMENTS,
     token: str | None = None,
 ) -> dict:
-    """取个股前 N 篇文章，每篇附上前 M 条评论（默认各 10 条）。
+    """取个股前 N 篇文章，每篇附上评论树（默认一次请求 100 条）。
 
     返回 ``{"symbol", "fetched_at", "count", "articles"}``。每篇文章含
     ``title`` / ``author`` / ``created_at`` / ``url`` / ``text``（原始 HTML）/
-    ``content``（纯文本）/ 阅读、评论、收藏、点赞数，以及 ``comments`` 列表。
-    评论按雪球默认顺序（最新在前），顶层优先，不足时用楼中楼回复补足。
+    ``content``（纯文本）/ 阅读、评论、收藏、点赞数，以及 ``comments``：
+    顶层 ``Comment`` 列表，楼中楼回复挂在各自的 ``children`` 里。
     """
     symbol = get_xueqiu_symbol(code)
     articles = fetch_xueqiu_articles(symbol, count=article_count, token=token)
@@ -345,56 +370,57 @@ def fetch_xueqiu_comments(
     status_id: int | str,
     count: int = XUEQIU_COMMENTS,
     token: str | None = None,
-    include_replies: bool = False,
-) -> list[dict]:
-    """取一篇雪球帖子的前 ``count`` 条评论。
+) -> list[Comment]:
+    """取一篇雪球帖子的评论，按接口原结构搭成评论树。
 
-    默认优先顶层评论，不够 ``count`` 条时再用楼中楼回复补足——有些帖子
-    （自己就是回复的帖子）整页都是回复，全过滤掉会一条不剩。每条评论都带
-    ``reply_to_comment_id`` / ``reply_to_author``，调用方可以自己区分。
-    一页不够就继续翻页，直到凑够或翻完。
+    只发一次请求，``count`` 是要的条数（接口实际封顶 50），不翻页。
+    返回顶层评论列表，楼中楼回复挂在父评论的 ``children`` 里；父评论不在
+    本次返回范围内的回复会作为顶层返回，``reply_to_comment_id`` 仍然保留。
+    想拍平可以用 :func:`flatten_comments`。
     """
     status_id = _to_int(status_id)
     if not status_id:
         raise XueqiuError("雪球评论需要文章 id")
 
-    ordered: list[dict] = []
-    top_level: list[dict] = []
-    replies: list[dict] = []
-    page = 1
-    while page <= _COMMENT_MAX_PAGES:
-        payload = _xueqiu_get(
-            "/statuses/comments.json",
-            {
-                "id": status_id,
-                "count": _COMMENT_PAGE_SIZE,
-                "page": page,
-                "reply": "true",
-                "asc": "false",
-                "type": "status",
-            },
-            token,
-        )
-        raw_list = payload.get("comments") or []
-        for raw in raw_list:
-            item = _parse_xueqiu_comment(raw)
-            if item is None:
-                continue
-            ordered.append(item)
-            (replies if item["reply_to_comment_id"] else top_level).append(item)
+    payload = _xueqiu_get(
+        "/statuses/comments.json",
+        {
+            "id": status_id,
+            "count": count,
+            "page": 1,
+            "reply": "true",
+            "asc": "false",
+            "type": "status",
+        },
+        token,
+    )
 
-        # include_replies 时要的是列表前 N 条，否则只关心顶层够不够
-        got = len(ordered) if include_replies else len(top_level)
-        if got >= count:
-            break
-        max_page = _to_int(payload.get("maxPage")) or 1
-        if not raw_list or page >= max_page:
-            break
-        page += 1
+    comments: list[Comment] = []
+    for raw in payload.get("comments") or []:
+        item = _parse_xueqiu_comment(raw)
+        if item is not None:
+            comments.append(item)
 
-    if include_replies:
-        return ordered[:count]
-    return (top_level + replies)[:count]
+    by_id = {item.id: item for item in comments}
+    roots: list[Comment] = []
+    for item in comments:
+        parent = by_id.get(item.reply_to_comment_id)
+        if parent is None or parent is item:
+            roots.append(item)
+        else:
+            parent.children.append(item)
+    return roots
+
+
+def flatten_comments(comments: list[Comment]) -> list[Comment]:
+    """按前序把评论树拍平：父评论排在它的回复前面。"""
+    flat: list[Comment] = []
+    stack = list(reversed(comments))
+    while stack:
+        item = stack.pop()
+        flat.append(item)
+        stack.extend(reversed(item.children))
+    return flat
 
 
 def get_xueqiu_symbol(code: str) -> str:
@@ -542,25 +568,26 @@ def _parse_xueqiu_article(raw: dict, symbol: str) -> dict | None:
     }
 
 
-def _parse_xueqiu_comment(raw: dict) -> dict | None:
+def _parse_xueqiu_comment(raw: dict) -> Comment | None:
     comment_id = _to_int(raw.get("id"))
     if not comment_id:
         return None
 
     user = raw.get("user") or {}
-    return {
-        "id": comment_id,
-        "author": _clean_text(user.get("screen_name")),
-        "author_id": _to_int(raw.get("user_id")) or _to_int(user.get("id")),
-        "content": _html_to_text(str(raw.get("description") or raw.get("text") or "")),
-        "created_at": _timestamp_text(raw.get("created_at")),
-        "like_count": _to_int(raw.get("like_count")) or 0,
-        "reply_count": _to_int(raw.get("reply_count")) or 0,
-        "ip_location": _clean_text(raw.get("ip_location")),
-        # 楼中楼回复会指向被回复的评论，顶层评论为 None
-        "reply_to_comment_id": _to_int(raw.get("in_reply_to_comment_id")),
-        "reply_to_author": _clean_text(raw.get("reply_screenName")),
-    }
+    # 楼中楼回复会指向被回复的评论，顶层评论为 None
+    reply_to = _to_int(raw.get("in_reply_to_comment_id"))
+    return (ChildComment if reply_to else Comment)(
+        id=comment_id,
+        author=_clean_text(user.get("screen_name")),
+        author_id=_to_int(raw.get("user_id")) or _to_int(user.get("id")),
+        content=_html_to_text(str(raw.get("description") or raw.get("text") or "")),
+        created_at=_timestamp_text(raw.get("created_at")),
+        like_count=_to_int(raw.get("like_count")) or 0,
+        reply_count=_to_int(raw.get("reply_count")) or 0,
+        ip_location=_clean_text(raw.get("ip_location")),
+        reply_to_comment_id=reply_to,
+        reply_to_author=_clean_text(raw.get("reply_screenName")),
+    )
 
 
 # ---------------------------------------------------------------------------

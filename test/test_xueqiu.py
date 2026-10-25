@@ -141,86 +141,64 @@ def test_articles_parse() -> None:
     assert "东鹏饮料" in second["content"] and "<a" not in second["content"]
 
 
-def test_comments_paging() -> None:
-    """楼中楼回复要跳过；一页不够就翻页，直到凑够 N 条顶层评论。"""
-    pages = {
-        1: {
-            "count": 75, "page": 1, "maxPage": 3,
-            "comments": [
-                comment(1),
-                comment(2, parent=1),
-                comment(3, parent=1),
-                comment(4, "第二条顶层"),
-            ],
-        },
-        2: {
-            "count": 75, "page": 2, "maxPage": 3,
-            "comments": [comment(index, f"第{index}条") for index in range(5, 15)],
-        },
+def test_comments_tree() -> None:
+    """只发一次请求；回复挂在父评论的 children 里，父评论不在时回到顶层。"""
+    payload = {
+        "count": 76, "maxPage": 2,
+        "comments": [
+            comment(1),
+            comment(2, parent=1),
+            comment(3, "第二条顶层"),
+            comment(4, parent=1),
+            comment(5, parent=3),
+            comment(9, parent=8),   # 父评论不在本次返回里
+        ],
     }
     calls = []
 
     def handler(url, **kwargs):
-        page = int(kwargs["params"]["page"])
-        calls.append(page)
-        return FakeResponse(pages[page])
+        calls.append(kwargs["params"])
+        return FakeResponse(payload)
 
     original = use_fake(handler)
-    max_pages = su._COMMENT_MAX_PAGES
-    su._COMMENT_MAX_PAGES = 3   # 默认只翻一页，这里单独验证翻页逻辑
     try:
-        comments = su.fetch_xueqiu_comments(413442879, count=5)
+        comments = su.fetch_xueqiu_comments(413442879)
     finally:
-        su._COMMENT_MAX_PAGES = max_pages
         restore(original)
 
-    assert calls == [1, 2], calls
-    assert len(comments) == 5, comments
-    assert [item["id"] for item in comments] == [1, 4, 5, 6, 7], [item["id"] for item in comments]
-    assert comments[0]["content"] == "说得有道理"
-    assert comments[0]["ip_location"] == "广东"
-    assert comments[0]["created_at"] == "2026-10-24 20:45", comments[0]["created_at"]
+    assert len(calls) == 1 and calls[0]["page"] == 1, calls   # 不翻页
+    assert calls[0]["count"] == su.XUEQIU_COMMENTS == 100
+
+    assert [item.id for item in comments] == [1, 3, 9]
+    assert [child.id for child in comments[0].children] == [2, 4]
+    assert [child.id for child in comments[1].children] == [5]
+    assert comments[2].children == []
+    assert comments[2].reply_to_comment_id == 8   # 父评论没取到，信息仍保留
+
+    # 类型和字段
+    assert isinstance(comments[0], su.Comment) and not comments[0].is_reply
+    assert all(isinstance(child, su.ChildComment) and child.is_reply for child in comments[0].children)
+    assert comments[0].content == "说得有道理"
+    assert comments[0].ip_location == "广东"
+    assert comments[0].created_at == "2026-10-24 20:45", comments[0].created_at
+
+    # 拍平：父在子前，且不丢人
+    flat = su.flatten_comments(comments)
+    assert [item.id for item in flat] == [1, 2, 4, 3, 5, 9]
 
 
-def test_comments_include_replies() -> None:
-    payload = {"count": 2, "maxPage": 1, "comments": [comment(1), comment(2, parent=1)]}
+def test_comments_reply_only() -> None:
+    """整页都是楼中楼回复的帖子也要返回对象，而不是空列表。"""
+    payload = {"count": 3, "maxPage": 1, "comments": [comment(7, parent=6), comment(8, parent=6)]}
     original = use_fake(lambda url, **kwargs: FakeResponse(payload))
     try:
-        comments = su.fetch_xueqiu_comments(1, count=10, include_replies=True)
-    finally:
-        restore(original)
-    assert [item["id"] for item in comments] == [1, 2]
-
-
-def test_comments_fallback() -> None:
-    """顶层评论不够时用回复补足；整页都是回复的帖子也不能返回空。"""
-    payload = {
-        "count": 10, "maxPage": 1,
-        "comments": [
-            comment(1),
-            comment(2, parent=1),
-            comment(3, parent=1),
-        ],
-    }
-    original = use_fake(lambda url, **kwargs: FakeResponse(payload))
-    try:
-        comments = su.fetch_xueqiu_comments(1, count=3)
+        comments = su.fetch_xueqiu_comments(1)
     finally:
         restore(original)
 
-    # 顶层优先，剩下的名额用回复补
-    assert [item["id"] for item in comments] == [1, 2, 3]
-    assert [item["reply_to_comment_id"] for item in comments] == [None, 1, 1]
-
-    # 全是回复的帖子：返回回复本身，而不是空列表
-    only_replies = {"count": 3, "maxPage": 1, "comments": [comment(7, parent=6), comment(8, parent=6)]}
-    original = use_fake(lambda url, **kwargs: FakeResponse(only_replies))
-    try:
-        comments = su.fetch_xueqiu_comments(1, count=10)
-    finally:
-        restore(original)
-    assert [item["id"] for item in comments] == [7, 8]
-    assert all(item["reply_to_comment_id"] == 6 for item in comments)
+    assert [item.id for item in comments] == [7, 8]
+    assert all(isinstance(item, su.ChildComment) for item in comments)
+    assert all(item.reply_to_comment_id == 6 for item in comments)
 
 
 def test_articles_with_comments() -> None:
@@ -248,8 +226,10 @@ def test_articles_with_comments() -> None:
     assert data["count"] == 10 and len(data["articles"]) == 10
     assert data["fetched_at"]
     for item in data["articles"]:
-        assert len(item["comments"]) == 10, item["id"]
-        assert item["comments"][0]["content"] == "评论0"
+        comments = item["comments"]
+        assert len(comments) == 10, item["id"]
+        assert all(isinstance(comment, su.Comment) for comment in comments)
+        assert comments[0].content == "评论0"
 
 
 def test_failures() -> None:
@@ -383,9 +363,8 @@ def main() -> None:
     try:
         test_symbol()
         test_articles_parse()
-        test_comments_paging()
-        test_comments_include_replies()
-        test_comments_fallback()
+        test_comments_tree()
+        test_comments_reply_only()
         test_articles_with_comments()
         test_failures()
         test_rate_limit_retry()
