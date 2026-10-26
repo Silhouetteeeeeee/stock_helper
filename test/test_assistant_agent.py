@@ -591,6 +591,10 @@ def test_context_usage() -> None:
     assert 0 < usage["percent"] < 80
     # 环的比例和百分比同源，不会一个超 100%、一个被截断
     assert abs(usage["percent"] - usage["tokens"] / usage["budget_tokens"] * 100) < 0.2
+    # 流式草稿的 token 直接加在占用上，负数或 None 不能把占用拉低
+    assert research.context_usage(1200)["tokens"] == usage["tokens"] + 1200
+    assert research.context_usage(-500)["tokens"] == usage["tokens"]
+    assert research.context_usage(None)["tokens"] == usage["tokens"]
 
     original_soft = agent_mod.CONTEXT_SOFT_TOKENS
     try:

@@ -13,7 +13,7 @@ import time
 
 import streamlit as st
 
-from assistant.agent import ResearchAgent, build_client
+from assistant.agent import ResearchAgent, build_client, estimate_tokens
 from assistant.env import load_env
 from assistant.render import (
     citation_html,
@@ -33,6 +33,7 @@ WELCOME = "直接提问，提到哪家公司就聊哪家，例如「紫金矿业
 MAX_ISSUES = 2
 RECENT_LIMIT = 50
 STREAM_INTERVAL = 0.08
+METER_INTERVAL = 0.4
 
 STORE = ConversationStore()
 
@@ -223,20 +224,22 @@ def _render_assistant(message: dict) -> None:
         st.caption(f"提示：{issue}")
 
 
-def _render_context_meter(agent) -> None:
-    """会话上下文占用环；助手还没建起来或统计失败时不显示。"""
+def _render_context_meter(agent, slot, extra_tokens: int = 0) -> None:
+    """把占用环画进侧栏占位符；助手还没建起来或统计失败时清空。"""
+    if slot is None:
+        return
     getter = getattr(agent, "context_usage", None)
     usage = None
     if callable(getter):
         try:
-            usage = getter()
+            usage = getter(extra_tokens)
         except Exception:  # noqa: BLE001 - 占用显示失败不影响对话
             usage = None
     if not usage:
+        slot.empty()
         return
-    st.markdown(context_ring_html(usage), unsafe_allow_html=True)
-    if usage.get("level") == "over":
-        st.caption("已超过上下文预算，下次提问会先压缩较早的取数结果。")
+    # 覆盖同一个占位符：一问一答过程中环会跟着涨，不会停在提问前的数值
+    slot.markdown(context_ring_html(usage), unsafe_allow_html=True)
 
 
 def _render_history() -> None:
@@ -303,8 +306,12 @@ with st.sidebar:
         st.session_state.notice = "已删除当前对话。"
         st.rerun()
 
-    # 会话一旦存在就提前建好助手，占用环才能显示当前上下文；尚未提问时为空
-    _render_context_meter(_agent_for(active_code) if active_code else None)
+    # 会话一旦存在就提前建好助手，占用环才能显示当前上下文；尚未提问时为空。
+    # 环画在占位符里，回答过程中可以在同一个位置刷新，不必等下一次 rerun。
+    meter_slot = st.empty()
+    _render_context_meter(
+        _agent_for(active_code) if active_code else None, meter_slot
+    )
 
     st.caption("回答里的 [n] 对应下方来源。数据来自本地已入库的财报、公告、调研与行情。")
 
@@ -365,7 +372,7 @@ if prompt and active_code:
         with st.chat_message("assistant"):
             placeholder = st.empty()
             steps = st.empty()
-            streamed = {"text": "", "last": 0.0}
+            streamed = {"text": "", "last": 0.0, "last_meter": 0.0}
 
             def emit(event: dict) -> None:
                 kind = event.get("type")
@@ -377,10 +384,17 @@ if prompt and active_code:
                         placeholder.markdown(
                             stream_text(streamed["text"]) + " ▌"
                         )
+                    # 草稿的 token 也计入上下文，环跟着回答往下走
+                    if now - streamed["last_meter"] >= METER_INTERVAL:
+                        streamed["last_meter"] = now
+                        _render_context_meter(
+                            agent, meter_slot, estimate_tokens(streamed["text"])
+                        )
                 elif kind == "discard":
                     # 这一轮其实是取数，先把草稿清掉
                     streamed["text"] = ""
                     placeholder.markdown("_正在取数…_")
+                    _render_context_meter(agent, meter_slot)
                 elif kind == "tool":
                     if event.get("cached"):
                         outcome = "复用缓存"
@@ -390,6 +404,8 @@ if prompt and active_code:
                         f"已取数：{event.get('name')} · "
                         f"{event.get('company') or '--'} · {outcome}"
                     )
+                    # 取数结果已经进了历史，占用会跳一截
+                    _render_context_meter(agent, meter_slot)
 
             try:
                 answer = agent.ask_stream(prompt, emit)
@@ -400,6 +416,7 @@ if prompt and active_code:
                 st.error(text)
                 st.session_state.messages.append({"role": "error", "text": text})
                 STORE.append(conversation_id, "error", {"text": text})
+                _render_context_meter(agent, meter_slot)
             else:
                 message = _answer_message(answer)
                 message["raw"] = agent.history_since(start)
@@ -408,3 +425,5 @@ if prompt and active_code:
                     _render_assistant(message)
                 st.session_state.messages.append(message)
                 STORE.append(conversation_id, "assistant", message)
+                # 收尾再画一次：去掉流式草稿的临时增量，显示落库后的真实占用
+                _render_context_meter(agent, meter_slot)

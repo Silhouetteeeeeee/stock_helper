@@ -252,15 +252,16 @@ class ResearchAgent:
     # ------------------------------------------------------------------
     # 上下文管理
     # ------------------------------------------------------------------
-    def context_usage(self) -> dict:
+    def context_usage(self, extra_tokens: int = 0) -> dict:
         """当前会话的上下文占用，供页面画占用环。
 
         分母用压缩阈值（软预算）：超过它，下一次提问会先丢弃较早轮次的
         工具取数结果。``percent`` 如实反映超额，``ratio`` 截到 1，只用于
-        画环，不参与任何判断。
+        画环，不参与任何判断。``extra_tokens`` 用来把正在流式输出的草稿
+        也算进去，环才能在回答过程中跟着涨。
         """
         budget = max(1, CONTEXT_SOFT_TOKENS)
-        tokens = self._estimate()
+        tokens = self._estimate() + max(0, int(extra_tokens or 0))
         share = tokens / budget
         if share >= 1:
             level = "over"

@@ -150,6 +150,14 @@ def context_ring_html(usage: dict) -> str:
         if level == "over"
         else detail
     )
+    # 超额提示直接放进环里，页面更新占位符时不会留下一条旧说明
+    warning = (
+        f'<div class="ctx-warn" style="font-size:.7rem;color:{color};'
+        'text-align:center;line-height:1.35;max-width:170px;margin-top:.15rem;">'
+        f"{hint}</div>"
+        if level == "over"
+        else ""
+    )
     return (
         '<div class="ctx-meter" title="' + hint + '" style="display:flex;'
         'flex-direction:column;align-items:center;gap:.2rem;margin:.4rem 0 .6rem;">'
@@ -165,6 +173,7 @@ def context_ring_html(usage: dict) -> str:
         f'font-weight="600" fill="currentColor">{percent_text}</text>'
         '</svg>'
         f'<div style="font-size:.72rem;opacity:.72;">{detail}</div>'
+        f"{warning}"
         '</div>'
     )
 

@@ -123,6 +123,9 @@ def test_context_ring() -> None:
     })
     assert "#e5534b" in over and "118%" in over
     assert "下次提问会先压缩" in over
+    # 超额说明跟着环走，更新占位符时不会残留旧提示
+    assert 'class="ctx-warn"' in over
+    assert 'class="ctx-warn"' not in normal
     assert 'stroke-dashoffset="0.0"' in over
 
     # 越界或缺失的输入也要能画，不抛异常
@@ -199,10 +202,14 @@ class _FakeAgent:
         self._history.append({"role": "assistant", "content": _FakeAnswer.text})
         return _FakeAnswer()
 
-    def context_usage(self) -> dict:
+    def context_usage(self, extra_tokens: int = 0) -> dict:
+        # 按历史长度增长：提问前 5.0k，一问一答后 23.1k，页面要能当场刷新
+        tokens = 5000 + 9050 * len(self._history) + extra_tokens
+        share = tokens / 55000
         return {
-            "tokens": 23100, "budget_tokens": 55000, "hard_tokens": 80000,
-            "percent": 42.0, "ratio": 0.42, "level": "normal",
+            "tokens": tokens, "budget_tokens": 55000, "hard_tokens": 80000,
+            "percent": round(share * 100, 1), "ratio": round(min(share, 1.0), 4),
+            "level": "normal" if share < 0.8 else "warn",
         }
 
     def history_size(self) -> int:
@@ -273,11 +280,14 @@ def test_webapp_flow() -> None:
     captions = [item.value for item in at.caption]
     assert "[1] 财报 · 东财 · 2026-06-30" in captions, captions
     assert [item.label for item in at.expander] == ["研究过程：1 次取数"]
-    # 侧栏的上下文占用环跟着当前会话显示
-    meter = next(
-        item.value for item in at.markdown if 'class="ctx-meter"' in item.value
-    )
-    assert "42%" in meter and "23.1k" in meter and "55.0k" in meter
+    # 侧栏的上下文占用环在同一轮里就刷新到回答后的占用，不停在提问前的 5.0k
+    meters = [item.value for item in at.markdown if 'class="ctx-meter"' in item.value]
+    assert len(meters) == 1, meters
+    meter = meters[0]
+    assert ">42%</text>" in meter, meter
+    assert "23.1k / 55.0k" in meter, meter
+    # 提问前的 9% 不能留在环里（占位符要真的被覆盖）
+    assert ">9%</text>" not in meter, meter
 
     # 对话已落库：一问一答两条，原始消息留给续聊
     store = ConversationStore()
