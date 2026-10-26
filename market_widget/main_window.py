@@ -266,6 +266,14 @@ class MarketWidget(QWidget):
         self._card_layout.addWidget(self._mini_row)
         self._card_layout.addWidget(self._body, 1)
 
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        x = area.right() - self.width() - WINDOW_MARGIN_X
+        y = area.top() + WINDOW_MARGIN_Y
+        self.move(max(area.left(), x), y)
+
     def _build_mini_row(self, parent: QWidget) -> QWidget:
         """迷你态单行：指数名称 / 点位 / 涨跌幅。"""
         row = QWidget(parent)
@@ -611,9 +619,6 @@ class MarketWidget(QWidget):
             self._card.adjustSize()
             self._fit_height()
 
-        x = area.right() - self.width() - WINDOW_MARGIN_X
-        y = area.top() + WINDOW_MARGIN_Y
-        self.move(max(area.left(), x), y)
 
 
     def _fit_height(self) -> None:
