@@ -253,12 +253,18 @@ async def conversation(request):
     meta = meta_for(cid)
     if meta is None:
         return JSONResponse({"error": "not found"}, status_code=404)
+    # 打开历史对话时也把上下文占用带上，占用环不用等下一次提问才出现
+    try:
+        usage = agent_for(cid, meta.primary_code).context_usage()
+    except Exception:  # noqa: BLE001 - 占用算不出来不影响读对话
+        usage = None
     return JSONResponse({
         "id": cid,
         "title": meta.title,
         "code": meta.primary_code or "",
         "name": meta.primary_name or meta.primary_code or "",
         "messages": [clean_message(message) for message in STORE.messages(cid)],
+        "usage": usage,
     })
 
 
