@@ -75,6 +75,13 @@ def test_board_of() -> None:
     assert screening.board_of("hk00700") == "其他"
 
 
+def test_default_quotas_skip_unsupported_boards() -> None:
+    boards = [name for name, _ in screening.BOARD_QUOTAS]
+    assert "创业板" not in boards, boards
+    assert "北交所" not in boards, boards
+    assert set(boards) == {"沪市主板", "深市主板", "科创板"}, boards
+
+
 def test_exclusion_reason() -> None:
     assert screening.exclusion_reason("sh600001", "ST某某", 10, 5e8) == "ST/退市"
     assert screening.exclusion_reason("sh600001", "*ST某某", 10, 5e8) == "ST/退市"
@@ -213,7 +220,8 @@ def test_screen_candidates() -> None:
     bars = {
         "sh600000": _bars(80, step=1.01),
         "sz000001": _bars(80, step=0.995),
-        "sz300001": _bars(20, step=1.0),
+        "sz000002": _bars(20, step=1.0),
+        "sz300001": _bars(80, step=1.0),
     }
 
     class FakeAk:
@@ -222,7 +230,8 @@ def test_screen_candidates() -> None:
             return Frame([
                 _spot("sh600000", "上涨股份", 300.0, 10e8, 3.0),
                 _spot("sz000001", "下跌股份", 50.0, 8e8, -2.0),
-                _spot("sz300001", "次新股份", 20.0, 6e8, 1.0),
+                _spot("sz000002", "次新股份", 20.0, 6e8, 1.0),
+                _spot("sz300001", "创业股份", 30.0, 9e8, 5.0),
             ])
 
         @staticmethod
@@ -251,8 +260,11 @@ def test_screen_candidates() -> None:
     assert "sz000001" in result["errors"]["history"]
     # 次新只有 20 根日线，不进候选
     assert "次新股份" not in names
+    # 创业板不参与筛选，哪怕日线和成交额都够
+    assert "创业股份" not in names
+    assert result["filters"]["exclude_boards"] == ["创业板", "北交所"]
     assert result["filters"]["shortlisted"] == 3
-    assert result["universe"]["scanned"] == 3
+    assert result["universe"]["scanned"] == 4
     assert result["missing"]
     # 只有最终名单拿到估值
     assert result["candidates"][0]["valuation"]["pe_ttm"] == 12.0
@@ -314,6 +326,7 @@ def test_screen_candidates_spot_failure() -> None:
 
 def main() -> None:
     test_board_of()
+    test_default_quotas_skip_unsupported_boards()
     test_exclusion_reason()
     test_shortlist_quotas_and_filters()
     test_stock_stats_metrics()

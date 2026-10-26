@@ -3,7 +3,8 @@
 流程分两步：
 
 1. 用全市场快照做硬过滤：剔除 ST、退市、上市新股、停牌和成交额过小的
-   股票，再按板块配额各取一部分，保证候选不是清一色的权重股。
+   股票，再按板块配额各取一部分，保证候选不是清一色的权重股。创业板、
+   北交所不参与（账户没有交易权限）。
 2. 只对入选的几十只股票拉日线，算均线位置、20/60 日涨幅、60 日区间位置、
    成交额放大倍数、换手率和总市值，合成量化分。
 
@@ -32,13 +33,19 @@ DEFAULT_MIN_AMOUNT_YI = 1.0
 DEFAULT_MIN_PRICE = 2.0
 CACHE_SECONDS = 900
 
+# 不参与筛选的板块：账户没有创业板、北交所的交易权限
+EXCLUDED_BOARDS: tuple[str, ...] = ("创业板", "北交所")
+
 # 按板块配额取成交额靠前的股票，避免候选全是沪深主板的权重股
-BOARD_QUOTAS: tuple[tuple[str, int], ...] = (
+_ALL_BOARD_QUOTAS: tuple[tuple[str, int], ...] = (
     ("沪市主板", 15),
     ("深市主板", 15),
     ("创业板", 15),
     ("科创板", 10),
     ("北交所", 5),
+)
+BOARD_QUOTAS: tuple[tuple[str, int], ...] = tuple(
+    (name, size) for name, size in _ALL_BOARD_QUOTAS if name not in EXCLUDED_BOARDS
 )
 SHORTLIST_SIZE = sum(size for _, size in BOARD_QUOTAS)
 
@@ -511,6 +518,7 @@ def screen_candidates(
     ]
     notes.append("量化分只反映量价与位置，不含基本面与估值结论")
     notes.append("候选池按板块配额取成交额靠前的股票，不是全市场涨幅榜")
+    notes.append(f"候选池不含{'、'.join(EXCLUDED_BOARDS)}")
     notes.append(f"最终名单每个板块最多 {MAX_PER_BOARD} 只，避免同一类股票占满")
 
     result = {
@@ -519,6 +527,7 @@ def screen_candidates(
         "filters": {
             "min_amount_yi": min_amount_yi,
             "exclude": "ST、退市、上市新股、停牌、无成交",
+            "exclude_boards": list(EXCLUDED_BOARDS),
             "boards": {name: size for name, size in BOARD_QUOTAS},
             "shortlisted": len(picked),
         },
