@@ -17,7 +17,7 @@ from assistant.agent import ResearchAgent, build_client, estimate_tokens
 from assistant.env import load_env
 from assistant.render import (
     citation_html,
-    context_ring_html,
+    context_meter_style,
     source_lines,
     stream_text,
 )
@@ -226,7 +226,7 @@ def _render_assistant(message: dict) -> None:
 
 
 def _render_context_meter(agent, slot, extra_tokens: int = 0) -> None:
-    """把占用环画进侧栏占位符；助手还没建起来或统计失败时清空。"""
+    """把占用环的样式写进占位符，环贴在发送按钮旁；助手不存在时清空。"""
     if slot is None:
         return
     getter = getattr(agent, "context_usage", None)
@@ -240,7 +240,7 @@ def _render_context_meter(agent, slot, extra_tokens: int = 0) -> None:
         slot.empty()
         return
     # 覆盖同一个占位符：一问一答过程中环会跟着涨，不会停在提问前的数值
-    slot.markdown(context_ring_html(usage), unsafe_allow_html=True)
+    slot.markdown(context_meter_style(usage), unsafe_allow_html=True)
 
 
 def _render_history() -> None:
@@ -300,6 +300,13 @@ elif prompt and is_market_question(prompt):
 active_code = st.session_state.get("active_code")
 active_name = st.session_state.get("active_name") or active_code
 
+# 占用环是贴在发送按钮旁的 CSS，占位符本身不占页面位置：会话一旦存在就先
+# 建好助手拿到当前占用，回答过程中再在同一个占位符里覆盖更新。
+meter_slot = st.empty()
+_render_context_meter(
+    _agent_for(active_code) if active_code else None, meter_slot
+)
+
 with st.sidebar:
     if st.button("新对话", use_container_width=True):
         _reset_conversation()
@@ -312,13 +319,6 @@ with st.sidebar:
         _reset_conversation()
         st.session_state.notice = "已删除当前对话。"
         st.rerun()
-
-    # 会话一旦存在就提前建好助手，占用环才能显示当前上下文；尚未提问时为空。
-    # 环画在占位符里，回答过程中可以在同一个位置刷新，不必等下一次 rerun。
-    meter_slot = st.empty()
-    _render_context_meter(
-        _agent_for(active_code) if active_code else None, meter_slot
-    )
 
     st.caption("回答里的 [n] 对应下方来源。数据来自本地已入库的财报、公告、调研与行情。")
 

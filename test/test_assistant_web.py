@@ -25,7 +25,7 @@ from assistant.models import Source
 from assistant.render import (
     citation_html,
     cite_text,
-    context_ring_html,
+    context_meter_style,
     source_lines,
     stream_text,
 )
@@ -99,41 +99,36 @@ def test_render_citations() -> None:
     assert "> 引用" in citation_html("> 引用\n\n毛利率 [[fin:1]]", sources)
 
 
-def test_context_ring() -> None:
-    normal = context_ring_html({
+def test_context_meter_style() -> None:
+    normal = context_meter_style({
         "tokens": 23100, "budget_tokens": 55000, "hard_tokens": 80000,
         "percent": 42.0, "ratio": 0.42, "level": "normal",
     })
-    assert 'class="ctx-meter"' in normal
-    assert "42%" in normal
-    assert "23.1k" in normal and "55.0k" in normal
-    assert "#4c8dff" in normal
-    # 42% → 环留出 58% 的空缺
-    assert 'stroke-dashoffset="167.6"' in normal, normal
+    # 环和百分比都挂在聊天输入框上，位置跟着发送按钮走
+    assert '[data-testid="stChatInput"]' in normal
+    assert 'content: "42%"' in normal, normal
+    assert "#4c8dff 42.0%" in normal, normal
+    assert "conic-gradient" in normal and "mask: radial-gradient" in normal
 
-    warn = context_ring_html({
+    warn = context_meter_style({
         "tokens": 50000, "budget_tokens": 55000, "percent": 90.9,
         "ratio": 0.909, "level": "warn",
     })
-    assert "#e8a33d" in warn and "91%" in warn
+    assert "#e8a33d" in warn and 'content: "91%"' in warn
 
-    over = context_ring_html({
+    over = context_meter_style({
         "tokens": 64900, "budget_tokens": 55000, "percent": 118.0,
         "ratio": 1.0, "level": "over",
     })
-    assert "#e5534b" in over and "118%" in over
-    assert "下次提问会先压缩" in over
-    # 超额说明跟着环走，更新占位符时不会残留旧提示
-    assert 'class="ctx-warn"' in over
-    assert 'class="ctx-warn"' not in normal
-    assert 'stroke-dashoffset="0.0"' in over
+    assert "#e5534b" in over and 'content: "118%"' in over
+    # 超额时环画满，但数字如实显示
+    assert "#e5534b 100.0%" in over
 
     # 越界或缺失的输入也要能画，不抛异常
-    clamped = context_ring_html({"ratio": 3.0, "percent": 300, "level": "什么"})
-    assert 'stroke-dashoffset="0.0"' in clamped
-    assert "#4c8dff" in clamped
-    empty = context_ring_html({})
-    assert "0%" in empty
+    clamped = context_meter_style({"ratio": 3.0, "percent": 300, "level": "什么"})
+    assert "#4c8dff 100.0%" in clamped
+    empty = context_meter_style({})
+    assert 'content: "0%"' in empty and "#4c8dff 0.0%" in empty
 
     # 流式过程中先隐藏内部 id，收尾时再换成角标
     assert stream_text("毛利率[[fin:1]]下降") == "毛利率下降"
@@ -280,14 +275,16 @@ def test_webapp_flow() -> None:
     captions = [item.value for item in at.caption]
     assert "[1] 财报 · 东财 · 2026-06-30" in captions, captions
     assert [item.label for item in at.expander] == ["研究过程：1 次取数"]
-    # 侧栏的上下文占用环在同一轮里就刷新到回答后的占用，不停在提问前的 5.0k
-    meters = [item.value for item in at.markdown if 'class="ctx-meter"' in item.value]
+    # 发送按钮旁的占用环在同一轮里就刷新到回答后的比例，不停在提问前的 9%
+    meters = [
+        item.value for item in at.markdown
+        if '[data-testid="stChatInput"]' in item.value
+    ]
     assert len(meters) == 1, meters
     meter = meters[0]
-    assert ">42%</text>" in meter, meter
-    assert "23.1k / 55.0k" in meter, meter
+    assert 'content: "42%"' in meter, meter
     # 提问前的 9% 不能留在环里（占位符要真的被覆盖）
-    assert ">9%</text>" not in meter, meter
+    assert 'content: "9%"' not in meter, meter
 
     # 对话已落库：一问一答两条，原始消息留给续聊
     store = ConversationStore()
@@ -493,7 +490,7 @@ def main() -> None:
     test_webapp_resume_and_delete()
     test_webapp_mentions_company()
     test_webapp_market_question()
-    test_context_ring()
+    test_context_meter_style()
     print("PASS")
     sys.stdout.flush()
     os._exit(0)
