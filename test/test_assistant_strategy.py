@@ -147,6 +147,10 @@ def test_strategy_schema() -> None:
     assert properties["risk_tolerance"]["enum"] == ["保守", "稳健", "积极"]
     assert properties["holdings"]["type"] == "array"
     assert tools.is_market_question("现在几成仓位合适")
+    assert tools.is_market_question("现在该几成仓")
+    assert tools.is_market_question("持仓怎么处理")
+    assert tools.is_market_question("止损设多少")
+    assert tools.is_market_question("现在适合建仓吗")
 
 
 def main() -> None:

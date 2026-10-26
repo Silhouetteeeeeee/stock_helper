@@ -27,6 +27,7 @@ from assistant.tools import (
     MARKET_NAME,
     find_company_in_text,
     is_market_question,
+    refers_to_company,
 )
 
 WELCOME = "直接提问，提到哪家公司就聊哪家，例如「紫金矿业靠什么赚钱」「东鹏饮料毛利率为什么下滑」；也可以问「今天大盘怎么看」。回答会标注数据来源。"
@@ -284,11 +285,17 @@ _init_state()
 # 这一句提到哪家公司，标题和本轮对话就跟到哪家。
 prompt = st.chat_input("问一句，如：紫金矿业靠什么赚钱？")
 mentioned = find_company_in_text(prompt) if prompt else None
+current_code = st.session_state.get("active_code")
 if mentioned:
     # 提到了公司就以公司为准，即使句子里还有“大盘”“走势”之类的词
     _switch_company(*mentioned)
 elif prompt and is_market_question(prompt):
-    _switch_market()
+    # 已经在聊某家公司时，“它的行业轮动”问的还是这家，不该被关键词带去新会话
+    keeps_company = (
+        current_code not in (None, MARKET_CODE) and refers_to_company(prompt)
+    )
+    if not keeps_company:
+        _switch_market()
 
 active_code = st.session_state.get("active_code")
 active_name = st.session_state.get("active_name") or active_code

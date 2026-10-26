@@ -400,6 +400,20 @@ def test_webapp_mentions_company() -> None:
         assert any("助手不可用" in item.value for item in at.error)
         # 标题下面只有一条引导，不再有“当前：…”那行
         assert not any(item.value.startswith("当前：") for item in at.caption)
+
+        # “它的行业轮动”回指的是东鹏，留在这段公司会话里，不被关键词带去大盘
+        at.chat_input[0].set_value("它的行业轮动怎么样").run()
+        assert not at.exception, list(at.exception)
+        assert at.session_state["active_code"] == "605499"
+        assert [title.value for title in at.title] == ["投资助手 · 东鹏饮料"]
+
+        # 没有指代的大盘问题仍然另开一段大盘会话
+        from assistant.tools import MARKET_CODE
+
+        at.chat_input[0].set_value("今天大盘怎么看").run()
+        assert not at.exception, list(at.exception)
+        assert at.session_state["active_code"] == MARKET_CODE
+        assert [title.value for title in at.title] == ["投资助手 · 大盘"]
     finally:
         agent_module.build_client = original
 

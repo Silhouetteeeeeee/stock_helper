@@ -182,6 +182,14 @@ def test_review_schemas() -> None:
     assert properties["horizon"]["minimum"] == 1
     assert properties["horizon"]["maximum"] == 20
     assert properties["limit"]["maximum"] == 60
+    # 复盘类问法不带公司名，也要能路由到大盘会话
+    assert tools.is_market_question("复盘一下最近几天的判断")
+    assert tools.is_market_question("上次判断准不准")
+    assert tools.is_market_question("命中率怎么样")
+    assert tools.is_market_question("把今天的判断记下来")
+    # 指代词说明问的是当前聊的那家公司，不该被大盘关键词带走
+    assert tools.refers_to_company("它的行业轮动怎么样")
+    assert not tools.refers_to_company("今天大盘怎么看")
 
 
 def main() -> None:
