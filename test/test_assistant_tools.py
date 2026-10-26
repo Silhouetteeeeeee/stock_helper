@@ -152,7 +152,7 @@ def test_schemas() -> None:
         "get_research_notes", "get_analyst_views",
         "get_announcements", "get_valuation", "calc_valuation",
         "get_market_overview", "get_news_events", "get_sector_rotation",
-        "screen_candidates",
+        "screen_candidates", "build_strategy_plan",
     ], names
     for item in tools.schemas():
         assert item["type"] == "function"
@@ -426,6 +426,10 @@ def test_load_skill_tool() -> None:
     assert screening.ok is True, screening
     assert "量化" in screening.data["instructions"]
 
+    strategy = tools.run_tool("load_skill", {"name": "strategy_risk"})
+    assert strategy.ok is True, strategy
+    assert "仓位上限" in strategy.data["instructions"]
+
     missing = tools.run_tool("load_skill", {"name": "q9"})
     assert missing.ok is False
     assert "business_model" in missing.error and "moat" in missing.error, missing
@@ -438,6 +442,7 @@ def test_load_skill_tool() -> None:
         "business_model", "moat", "operating_history", "financial_safety",
         "growth_outlook", "management", "valuation", "margin_of_safety",
         "market_view", "news_events", "sector_rotation", "stock_screening",
+        "strategy_risk",
     ]
 
 

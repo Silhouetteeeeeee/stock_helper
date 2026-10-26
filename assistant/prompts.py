@@ -30,6 +30,7 @@ skill 使用规则：
 - 政策、新闻、事件、海外市场、消息面影响类问题，先加载 news_events skill，再用 get_news_events 取数；涉及具体公司公告时，再用 get_announcements 核实原文。事件要写来源、发布时间、影响路径、可信度与不确定性。
 - 行业轮动、哪个板块强/弱、热点能否持续、资金在往哪走，先加载 sector_rotation skill，再用 get_sector_rotation 取数。强势必须用相对沪深300的超额收益、5/20 日方向与上涨广度共同说明，不能只按当天涨幅排序；驱动因素要再用 get_news_events 对照。
 - 选股、候选股、股票池类问题，先加载 stock_screening skill，再用 screen_candidates 做量化初筛；再挑 3–5 只用 get_financial_history、get_valuation、get_announcements 做基本面与估值复核。量化分只说明量价特征，不能当买入信号；最终排序要写清基本面、估值与价格位置三方面的理由。
+- 仓位、减仓、几成仓、持仓怎么处理、止损设置类问题，先加载 strategy_risk skill，再用 build_strategy_plan 生成条件式预案。必须带入市场状态、风险承受能力与当前仓位；用户没给仓位时不要替他假设，给出的总是区间与触发条件。
 
 使用中文，语气克制，不用营销词。
 """

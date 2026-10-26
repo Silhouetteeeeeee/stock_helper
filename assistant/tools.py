@@ -42,6 +42,7 @@ from research.market_state import classify_market
 from research.news_events import build_news_events
 from research.screening import screen_candidates as build_screen
 from research.sector_rotation import build_sector_rotation
+from research.strategy import build_plan as plan_strategy
 from stock.peers import build_peers
 from stock.segments import ensure_segments, segments_from_rows
 from stock.shareholders import PAGE_URL as SHAREHOLDER_URL
@@ -658,6 +659,67 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "build_strategy_plan",
+            "description": (
+                "结合市场状态、风险等级、用户风险承受能力、当前仓位与持仓，"
+                "给出有条件的操作预案：观望/持有/分批建仓/降低风险的动作与触发条件、"
+                "总仓位上限、单只上限、现金下限与止损比例，并检查超配与止损状态。"
+                "回答“现在该几成仓”“要不要减仓”“持仓怎么处理”时调用。"
+                "market_state 不传会现场取一次大盘状态；不传仓位只给区间不给具体动作"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "market_state": {
+                        "type": "string",
+                        "enum": ["强势", "震荡", "弱势", "极端风险"],
+                        "description": "当前市场状态；不传则现场取大盘数据判断",
+                    },
+                    "risk_level": {
+                        "type": "string",
+                        "enum": ["低", "中", "高", "极高"],
+                        "description": "市场风险等级，可取自 get_market_overview 的 data.state.risk_level",
+                    },
+                    "risk_tolerance": {
+                        "type": "string",
+                        "enum": ["保守", "稳健", "积极"],
+                        "description": "用户风险承受能力，默认稳健",
+                    },
+                    "position_pct": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 100,
+                        "description": "当前总仓位百分比（股票类资产占总资产）",
+                    },
+                    "cash_pct": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 100,
+                        "description": "当前现金比例百分比",
+                    },
+                    "holdings": {
+                        "type": "array",
+                        "description": "持仓明细，用于检查超配与止损",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "code": {"type": "string"},
+                                "name": {"type": "string"},
+                                "weight_pct": {"type": "number"},
+                                "cost": {"type": "number"},
+                                "price": {"type": "number"},
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 
@@ -796,6 +858,8 @@ def run_tool(
             return _sector_rotation_tool(arguments)
         if name == "screen_candidates":
             return _screen_candidates_tool(arguments)
+        if name == "build_strategy_plan":
+            return _strategy_plan_tool(arguments)
 
         code, error, _ = resolve_code(arguments.get("company"), default_company)
         if code is None:
@@ -1102,6 +1166,47 @@ def _screen_candidates_tool(arguments: dict) -> ToolResult:
         ok=True,
         as_of=result.get("as_of"),
         sources=tuple(_screen_sources(result)),
+        data=result,
+    )
+
+
+def _strategy_plan_tool(arguments: dict) -> ToolResult:
+    """市场状态可由调用方传入，也可以现场取一次大盘数据再判断。"""
+    profile = {
+        "risk_tolerance": arguments.get("risk_tolerance"),
+        "position_pct": arguments.get("position_pct"),
+        "cash_pct": arguments.get("cash_pct"),
+    }
+    holdings = arguments.get("holdings")
+    if not isinstance(holdings, list):
+        holdings = None
+
+    sources: list[Source] = []
+    market: dict = {}
+    as_of = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    state = str(arguments.get("market_state") or "").strip()
+    if state in ("强势", "震荡", "弱势", "极端风险"):
+        market = {"state": state, "risk_level": arguments.get("risk_level")}
+    else:
+        try:
+            overview = build_market_overview()
+            market = classify_market(overview)
+            as_of = overview.get("as_of") or as_of
+            sources = _market_sources({**overview, "state": market})
+        except Exception as error:  # noqa: BLE001 - 取不到就按缺失处理
+            market = {"state": None, "error": f"大盘状态获取失败：{error}"}
+
+    try:
+        result = plan_strategy(profile, market, holdings)
+    except Exception as error:  # noqa: BLE001
+        return ToolResult(ok=False, error=f"策略方案生成失败：{error}")
+
+    if market.get("error"):
+        result.setdefault("missing", []).append(market["error"])
+    return ToolResult(
+        ok=True,
+        as_of=as_of,
+        sources=tuple(sources),
         data=result,
     )
 
