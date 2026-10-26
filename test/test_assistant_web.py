@@ -22,7 +22,13 @@ except ImportError:  # pragma: no cover - 没装 streamlit 时只跳过页面测
 
 from assistant import server
 from assistant.models import Source
-from assistant.render import citation_html, cite_text, source_lines, stream_text
+from assistant.render import (
+    citation_html,
+    cite_text,
+    context_ring_html,
+    source_lines,
+    stream_text,
+)
 from assistant.selection import read_selection, write_selection
 from assistant.store import ConversationStore, build_title
 
@@ -92,6 +98,40 @@ def test_render_citations() -> None:
     # 引用以外的 Markdown 语法要留着
     assert "> 引用" in citation_html("> 引用\n\n毛利率 [[fin:1]]", sources)
 
+
+def test_context_ring() -> None:
+    normal = context_ring_html({
+        "tokens": 23100, "budget_tokens": 55000, "hard_tokens": 80000,
+        "percent": 42.0, "ratio": 0.42, "level": "normal",
+    })
+    assert 'class="ctx-meter"' in normal
+    assert "42%" in normal
+    assert "23.1k" in normal and "55.0k" in normal
+    assert "#4c8dff" in normal
+    # 42% → 环留出 58% 的空缺
+    assert 'stroke-dashoffset="167.6"' in normal, normal
+
+    warn = context_ring_html({
+        "tokens": 50000, "budget_tokens": 55000, "percent": 90.9,
+        "ratio": 0.909, "level": "warn",
+    })
+    assert "#e8a33d" in warn and "91%" in warn
+
+    over = context_ring_html({
+        "tokens": 64900, "budget_tokens": 55000, "percent": 118.0,
+        "ratio": 1.0, "level": "over",
+    })
+    assert "#e5534b" in over and "118%" in over
+    assert "下次提问会先压缩" in over
+    assert 'stroke-dashoffset="0.0"' in over
+
+    # 越界或缺失的输入也要能画，不抛异常
+    clamped = context_ring_html({"ratio": 3.0, "percent": 300, "level": "什么"})
+    assert 'stroke-dashoffset="0.0"' in clamped
+    assert "#4c8dff" in clamped
+    empty = context_ring_html({})
+    assert "0%" in empty
+
     # 流式过程中先隐藏内部 id，收尾时再换成角标
     assert stream_text("毛利率[[fin:1]]下降") == "毛利率下降"
 
@@ -158,6 +198,12 @@ class _FakeAgent:
             emit({"type": "text", "delta": piece})
         self._history.append({"role": "assistant", "content": _FakeAnswer.text})
         return _FakeAnswer()
+
+    def context_usage(self) -> dict:
+        return {
+            "tokens": 23100, "budget_tokens": 55000, "hard_tokens": 80000,
+            "percent": 42.0, "ratio": 0.42, "level": "normal",
+        }
 
     def history_size(self) -> int:
         return len(self._history)
@@ -227,6 +273,11 @@ def test_webapp_flow() -> None:
     captions = [item.value for item in at.caption]
     assert "[1] 财报 · 东财 · 2026-06-30" in captions, captions
     assert [item.label for item in at.expander] == ["研究过程：1 次取数"]
+    # 侧栏的上下文占用环跟着当前会话显示
+    meter = next(
+        item.value for item in at.markdown if 'class="ctx-meter"' in item.value
+    )
+    assert "42%" in meter and "23.1k" in meter and "55.0k" in meter
 
     # 对话已落库：一问一答两条，原始消息留给续聊
     store = ConversationStore()
@@ -418,6 +469,7 @@ def main() -> None:
     test_webapp_resume_and_delete()
     test_webapp_mentions_company()
     test_webapp_market_question()
+    test_context_ring()
     print("PASS")
     sys.stdout.flush()
     os._exit(0)

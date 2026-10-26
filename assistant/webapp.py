@@ -15,7 +15,12 @@ import streamlit as st
 
 from assistant.agent import ResearchAgent, build_client
 from assistant.env import load_env
-from assistant.render import citation_html, source_lines, stream_text
+from assistant.render import (
+    citation_html,
+    context_ring_html,
+    source_lines,
+    stream_text,
+)
 from assistant.store import ConversationStore, build_title
 from assistant.tools import (
     MARKET_CODE,
@@ -218,6 +223,22 @@ def _render_assistant(message: dict) -> None:
         st.caption(f"提示：{issue}")
 
 
+def _render_context_meter(agent) -> None:
+    """会话上下文占用环；助手还没建起来或统计失败时不显示。"""
+    getter = getattr(agent, "context_usage", None)
+    usage = None
+    if callable(getter):
+        try:
+            usage = getter()
+        except Exception:  # noqa: BLE001 - 占用显示失败不影响对话
+            usage = None
+    if not usage:
+        return
+    st.markdown(context_ring_html(usage), unsafe_allow_html=True)
+    if usage.get("level") == "over":
+        st.caption("已超过上下文预算，下次提问会先压缩较早的取数结果。")
+
+
 def _render_history() -> None:
     for message in st.session_state.messages:
         role = message.get("role")
@@ -281,6 +302,9 @@ with st.sidebar:
         _reset_conversation()
         st.session_state.notice = "已删除当前对话。"
         st.rerun()
+
+    # 会话一旦存在就提前建好助手，占用环才能显示当前上下文；尚未提问时为空
+    _render_context_meter(_agent_for(active_code) if active_code else None)
 
     st.caption("回答里的 [n] 对应下方来源。数据来自本地已入库的财报、公告、调研与行情。")
 

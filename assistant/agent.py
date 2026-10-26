@@ -252,6 +252,31 @@ class ResearchAgent:
     # ------------------------------------------------------------------
     # 上下文管理
     # ------------------------------------------------------------------
+    def context_usage(self) -> dict:
+        """当前会话的上下文占用，供页面画占用环。
+
+        分母用压缩阈值（软预算）：超过它，下一次提问会先丢弃较早轮次的
+        工具取数结果。``percent`` 如实反映超额，``ratio`` 截到 1，只用于
+        画环，不参与任何判断。
+        """
+        budget = max(1, CONTEXT_SOFT_TOKENS)
+        tokens = self._estimate()
+        share = tokens / budget
+        if share >= 1:
+            level = "over"
+        elif share >= 0.8:
+            level = "warn"
+        else:
+            level = "normal"
+        return {
+            "tokens": tokens,
+            "budget_tokens": CONTEXT_SOFT_TOKENS,
+            "hard_tokens": CONTEXT_HARD_TOKENS,
+            "percent": round(share * 100, 1),
+            "ratio": round(min(share, 1.0), 4),
+            "level": level,
+        }
+
     def _estimate(self, question: str = "") -> int:
         """粗估下一次请求的输入 token；工具 schema 也要算进去。"""
         parts = [self._system_text(), json.dumps(schemas(), ensure_ascii=False)]

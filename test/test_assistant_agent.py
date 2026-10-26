@@ -580,6 +580,37 @@ def test_estimate_tokens() -> None:
     assert agent_mod.estimate_tokens("x" * 1000) == 301
 
 
+def test_context_usage() -> None:
+    research = agent_mod.ResearchAgent(FakeClient([]), default_company="605499")
+    usage = research.context_usage()
+    assert usage["tokens"] > 0
+    assert usage["budget_tokens"] == agent_mod.CONTEXT_SOFT_TOKENS
+    assert usage["hard_tokens"] == agent_mod.CONTEXT_HARD_TOKENS
+    assert usage["level"] == "normal"
+    assert 0 <= usage["ratio"] <= 1
+    assert 0 < usage["percent"] < 80
+    # 环的比例和百分比同源，不会一个超 100%、一个被截断
+    assert abs(usage["percent"] - usage["tokens"] / usage["budget_tokens"] * 100) < 0.2
+
+    original_soft = agent_mod.CONTEXT_SOFT_TOKENS
+    try:
+        agent_mod.CONTEXT_SOFT_TOKENS = int(usage["tokens"] / 0.85)
+        warn = research.context_usage()
+        assert warn["level"] == "warn"
+        assert 80 <= warn["percent"] < 100
+
+        agent_mod.CONTEXT_SOFT_TOKENS = max(1, usage["tokens"] // 2)
+        over = research.context_usage()
+        assert over["level"] == "over"
+        assert over["ratio"] == 1.0
+        assert over["percent"] > 100
+        # 分母为 0 的极端配置也不能除零
+        agent_mod.CONTEXT_SOFT_TOKENS = 0
+        assert research.context_usage()["level"] == "over"
+    finally:
+        agent_mod.CONTEXT_SOFT_TOKENS = original_soft
+
+
 def _history_turn(index: int, data: dict | None = None) -> list[dict]:
     """一轮问答：user + tool_call + tool 结果 + 最终回答。"""
     call_id = f"c{index}"
@@ -777,6 +808,7 @@ def main() -> None:
     test_realtime_tools_bypass_cache()
     test_restore_seeds_tool_cache()
     test_estimate_tokens()
+    test_context_usage()
     test_over_soft_deletes_old_tool_groups()
     test_over_hard_stubs_older_rounds_in_current_question()
     test_over_hard_summarizes_oldest_turns()
