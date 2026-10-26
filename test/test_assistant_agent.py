@@ -427,10 +427,13 @@ def test_tool_result_cache_reuses_same_call() -> None:
         if message.get("role") == "tool"
     ]
     assert len(tool_messages) == 2, tool_messages
-    assert "revenue_yi" in tool_messages[0]["content"]
+    # 旧的那份被换成 stub，只留来源；缓存命中的新结果带着完整 data
+    old = json.loads(tool_messages[0]["content"])
+    assert old["superseded"] is True and "data" not in old, old
+    assert old["sources"][0]["id"] == FIN.id
     reused = json.loads(tool_messages[1]["content"])
-    assert reused["cached"] is True and "data" not in reused
-    assert reused["sources"][0]["id"] == FIN.id
+    assert reused["cached"] is True
+    assert reused["data"] == {"revenue_yi": 124.43}
     assert [source.id for source in second.citations] == [FIN.id]
 
 
@@ -501,7 +504,7 @@ def test_realtime_tools_bypass_cache() -> None:
 
 
 def test_restore_seeds_tool_cache() -> None:
-    """重开对话：回放出来的取数结果直接进缓存，不必重新取数、不再塞一份 data。"""
+    """重开对话：回放出来的取数结果直接进缓存，不必重新取数。"""
     history = [
         {"role": "user", "content": "靠什么赚钱"},
         {
@@ -549,7 +552,196 @@ def test_restore_seeds_tool_cache() -> None:
         message for message in client.calls[1]["messages"]
         if message.get("role") == "tool"
     ]
-    assert '"cached": true' in tool_messages[-1]["content"]
+    # 回放出来的那份被换成 stub，缓存命中的新结果重新拿到完整数据
+    old = json.loads(tool_messages[0]["content"])
+    assert old["superseded"] is True and "data" not in old, old
+    reused = json.loads(tool_messages[-1]["content"])
+    assert reused["cached"] is True
+    assert reused["data"] == {"revenue_yi": 124.43}
+
+
+def test_estimate_tokens() -> None:
+    assert agent_mod.estimate_tokens("") == 0
+    assert agent_mod.estimate_tokens("财报数据") > agent_mod.estimate_tokens("abcd")
+    assert agent_mod.estimate_tokens("x" * 1000) == 301
+
+
+def _history_turn(index: int, data: dict | None = None) -> list[dict]:
+    """一轮问答：user + tool_call + tool 结果 + 最终回答。"""
+    call_id = f"c{index}"
+    return [
+        {"role": "user", "content": f"问题{index}"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": call_id,
+                "type": "function",
+                "function": {"name": "get_finance", "arguments": "{}"},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": json.dumps({
+                "ok": True,
+                "sources": [FIN.to_dict()],
+                "company": "605499",
+                "as_of": "2026-06-30",
+                "data": data if data is not None else {"payload": "x" * 5000},
+            }, ensure_ascii=False),
+        },
+        {"role": "assistant", "content": f"回答{index}"},
+    ]
+
+
+def test_over_soft_deletes_old_tool_groups() -> None:
+    """超过软阈值：整组删掉历史工具链，保留用户问题和最终回答。"""
+    history = []
+    for index in range(3):
+        history.extend(_history_turn(index))
+
+    client = FakeClient([response(content="新回答")])
+    original_soft = agent_mod.CONTEXT_SOFT_TOKENS
+    original_hard = agent_mod.CONTEXT_HARD_TOKENS
+    agent_mod.CONTEXT_SOFT_TOKENS = 1
+    agent_mod.CONTEXT_HARD_TOKENS = 10 ** 9
+    try:
+        research = agent_mod.ResearchAgent(client, default_company="605499")
+        research.restore_history(history)
+        research.ask("新问题")
+    finally:
+        agent_mod.CONTEXT_SOFT_TOKENS = original_soft
+        agent_mod.CONTEXT_HARD_TOKENS = original_hard
+
+    sent = client.calls[0]["messages"]
+    call_ids = [
+        call["id"]
+        for message in sent
+        for call in message.get("tool_calls") or []
+    ]
+    assert call_ids == [], call_ids                    # 工具链整组删光
+    contents = [message.get("content") for message in sent]
+    # 用户问题和最终回答一个不少
+    assert "问题0" in contents and "回答0" in contents
+    assert "问题1" in contents and "回答1" in contents
+    assert "问题2" in contents and "回答2" in contents
+    assert not [m for m in sent if m.get("role") == "tool"]
+
+
+def test_over_hard_stubs_older_rounds_in_current_question() -> None:
+    """单轮自己撑爆：stub 当前问题里较早的取数，最新一组和 skill 不动。"""
+    client = FakeClient([
+        response(tool_calls=[
+            tool_call("s1", "load_skill", {"skill": "finance"}),
+            tool_call("c1", "get_finance", {}),
+        ]),
+        response(tool_calls=[tool_call("c2", "get_segments", {})]),
+        response(tool_calls=[tool_call("c3", "get_dividends", {})]),
+        response(content="汇总回答"),
+    ])
+
+    def fake_run_tool(name, arguments, default_company=None):
+        return ToolResult(
+            ok=True, company="605499", as_of="2026-06-30", sources=(FIN,),
+            data={"payload": name + "x" * 2000},
+        )
+
+    original = agent_mod.run_tool
+    original_hard = agent_mod.CONTEXT_HARD_TOKENS
+    agent_mod.run_tool = fake_run_tool
+    agent_mod.CONTEXT_HARD_TOKENS = 10
+    try:
+        research = agent_mod.ResearchAgent(client, default_company="605499")
+        answer = research.ask("基本面怎么样")
+    finally:
+        agent_mod.run_tool = original
+        agent_mod.CONTEXT_HARD_TOKENS = original_hard
+
+    assert answer.text == "汇总回答"
+    sent = client.calls[-1]["messages"]
+    tools = {
+        message["tool_call_id"]: json.loads(message["content"])
+        for message in sent if message.get("role") == "tool"
+    }
+    # load_skill 是判据，轮内不裁；较早的取数结果换成 stub；最新一组保留
+    assert "data" in tools["s1"] and tools["s1"].get("omitted") is not True
+    assert tools["c1"]["omitted"] is True and "data" not in tools["c1"]
+    assert tools["c2"]["omitted"] is True and "data" not in tools["c2"]
+    assert "data" in tools["c3"]
+
+
+def test_over_hard_summarizes_oldest_turns() -> None:
+    """删完工具链仍超硬阈值：摘要最早一轮，并拼进 system prompt。"""
+    history = []
+    for index in range(3):
+        history.extend(_history_turn(index))
+
+    client = FakeClient([
+        response(content="旧轮次摘要：东鹏饮料财报数据。"),
+        response(content="新回答"),
+    ])
+    original_soft = agent_mod.CONTEXT_SOFT_TOKENS
+    original_hard = agent_mod.CONTEXT_HARD_TOKENS
+    agent_mod.CONTEXT_SOFT_TOKENS = 1
+    agent_mod.CONTEXT_HARD_TOKENS = 1
+    try:
+        research = agent_mod.ResearchAgent(client, default_company="605499")
+        research.restore_history(history)
+        research.ask("新问题")
+    finally:
+        agent_mod.CONTEXT_SOFT_TOKENS = original_soft
+        agent_mod.CONTEXT_HARD_TOKENS = original_hard
+
+    assert research._summary == "旧轮次摘要：东鹏饮料财报数据。"
+    summary_call = client.calls[0]
+    assert "tools" not in summary_call
+    assert summary_call["messages"][0]["content"] == agent_mod.SUMMARY_PROMPT
+    assert "用户问：问题0" in summary_call["messages"][1]["content"]
+    assert "回答0" in summary_call["messages"][1]["content"]
+
+    sent = client.calls[1]["messages"]
+    assert "旧轮次摘要" in sent[0]["content"]
+    contents = [message.get("content") for message in sent]
+    assert "问题0" not in contents and "回答0" not in contents
+    # 最近两轮受保护
+    assert "问题1" in contents and "问题2" in contents
+    assert "新问题" in contents
+
+
+class SummaryFailClient(FakeClient):
+    """摘要调用抛错，其余调用正常。"""
+
+    def _create(self, **kwargs):
+        if "tools" not in kwargs:
+            self.calls.append(kwargs)
+            raise RuntimeError("摘要接口挂了")
+        return super()._create(**kwargs)
+
+
+def test_summary_failure_falls_back_to_omitting_turns() -> None:
+    history = []
+    for index in range(3):
+        history.extend(_history_turn(index))
+
+    client = SummaryFailClient([response(content="新回答")])
+    original_soft = agent_mod.CONTEXT_SOFT_TOKENS
+    original_hard = agent_mod.CONTEXT_HARD_TOKENS
+    agent_mod.CONTEXT_SOFT_TOKENS = 1
+    agent_mod.CONTEXT_HARD_TOKENS = 1
+    try:
+        research = agent_mod.ResearchAgent(client, default_company="605499")
+        research.restore_history(history)
+        answer = research.ask("新问题")
+    finally:
+        agent_mod.CONTEXT_SOFT_TOKENS = original_soft
+        agent_mod.CONTEXT_HARD_TOKENS = original_hard
+
+    assert answer.text == "新回答"
+    assert answer.issues[0]["type"] == "context_summary_failed"
+    contents = [message.get("content") for message in client.calls[-1]["messages"]]
+    assert "问题0" not in contents and "回答0" not in contents
+    assert "问题2" in contents
 
 
 def main() -> None:
@@ -570,6 +762,11 @@ def main() -> None:
     test_tool_cache_skips_failed_results()
     test_realtime_tools_bypass_cache()
     test_restore_seeds_tool_cache()
+    test_estimate_tokens()
+    test_over_soft_deletes_old_tool_groups()
+    test_over_hard_stubs_older_rounds_in_current_question()
+    test_over_hard_summarizes_oldest_turns()
+    test_summary_failure_falls_back_to_omitting_turns()
     print("PASS")
     sys.stdout.flush()
     os._exit(0)

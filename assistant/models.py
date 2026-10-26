@@ -42,7 +42,7 @@ class ToolResult:
     sources: tuple[Source, ...] = ()
     data: dict | None = None
     error: str | None = None
-    # 命中会话缓存：data 不重复发给模型，沿用同一会话里上一次的完整结果
+    # 命中会话缓存：这次没有联网；data 照常返回，上下文里旧的那份会被换成 stub
     cached: bool = False
 
     def to_message(self) -> str:
@@ -53,7 +53,7 @@ class ToolResult:
         }
         if self.cached:
             message["cached"] = True
-            message["note"] = "本次会话已取过相同参数的数据，data 不再重复返回，沿用上一次结果"
+            message["note"] = "本次会话已取过相同参数的数据，未重新请求；此前那份已从上下文移除"
         for key in ("company", "as_of", "data", "error"):
             value = getattr(self, key)
             if value is not None:
