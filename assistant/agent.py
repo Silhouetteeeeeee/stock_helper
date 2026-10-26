@@ -10,7 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from openai import (
     APIConnectionError,
@@ -33,6 +33,15 @@ TEMPERATURE = 0.3
 TIMEOUT = 60.0
 # 只重试网络/超时/5xx/限流这类临时故障；鉴权、参数错误重试也没用
 RETRYABLE = (APIConnectionError, APITimeoutError, InternalServerError, RateLimitError)
+# 不参与会话缓存：skill/公司解析是元操作；估值、公告、业绩预告随行情和
+# 披露变化，长会话里缓存住会拿到过期数据。
+UNCACHED_TOOLS = frozenset({
+    "load_skill",
+    "resolve_company",
+    "get_valuation",
+    "get_announcements",
+    "get_earnings_forecasts",
+})
 
 
 class AssistantError(Exception):
@@ -80,6 +89,8 @@ class ResearchAgent:
         self.max_rounds = max_rounds
         self._history: list[dict] = []
         self._registry: dict[str, Source] = {}
+        # 会话级取数缓存：同一公司、同一参数只保留一份完整结果，重复调用不再重发 data
+        self._tool_cache: dict[tuple[str, str, str], ToolResult] = {}
 
     def use_company(self, company: str) -> str:
         """把默认公司切到 ``company``，返回解析出的六位代码。"""
@@ -105,8 +116,18 @@ class ResearchAgent:
         """
         self._history = copy.deepcopy(list(messages))
         self._registry = {}
+        self._tool_cache = {}
+        calls: dict[str, dict] = {}
         for message in self._history:
-            if message.get("role") != "tool":
+            role = message.get("role")
+            if role == "assistant":
+                for call in message.get("tool_calls") or []:
+                    call_id = call.get("id")
+                    function = call.get("function") or {}
+                    if call_id and function.get("name"):
+                        calls[str(call_id)] = function
+                continue
+            if role != "tool":
                 continue
             try:
                 payload = json.loads(message.get("content") or "{}")
@@ -114,9 +135,62 @@ class ResearchAgent:
                 continue
             if not isinstance(payload, dict):
                 continue
-            for item in payload.get("sources") or []:
-                if isinstance(item, dict) and item.get("id"):
-                    self._registry[str(item["id"])] = _source_from_dict(item)
+            sources = [
+                _source_from_dict(item)
+                for item in payload.get("sources") or []
+                if isinstance(item, dict) and item.get("id")
+            ]
+            for source in sources:
+                self._registry[source.id] = source
+
+            # 用回放出来的完整结果给缓存播种：重开对话后第一次再调同一工具
+            # 直接复用，不必重新取数、也不会再往历史里塞一份重复的 data。
+            function = calls.get(str(message.get("tool_call_id") or ""))
+            if function is None or payload.get("cached"):
+                continue
+            name = str(function.get("name") or "")
+            if not name or name in UNCACHED_TOOLS:
+                continue
+            if not payload.get("ok") or payload.get("data") is None:
+                continue
+            arguments = _parse_arguments(function.get("arguments"))
+            self._tool_cache[self._cache_key(name, arguments)] = ToolResult(
+                ok=True,
+                company=payload.get("company"),
+                as_of=payload.get("as_of"),
+                sources=tuple(sources),
+                data=payload.get("data"),
+            )
+
+    def _run_tool(self, name: str, arguments: dict) -> ToolResult:
+        """执行一个取数工具；同一会话里相同公司、相同参数的结果直接复用。
+
+        命中时只把 sources 与 ``cached`` 标记交回模型，完整 data 仍留在
+        之前的历史消息里，避免同一份财报 JSON 在上下文里反复堆积。
+        失败结果不缓存，下次调用仍会重新取数。
+        """
+        if name in UNCACHED_TOOLS:
+            return run_tool(name, arguments, self.default_company)
+        if not isinstance(arguments, dict):
+            arguments = {}
+        key = self._cache_key(name, arguments)
+        cached = self._tool_cache.get(key)
+        if cached is not None:
+            return replace(cached, data=None, cached=True)
+        result = run_tool(name, arguments, self.default_company)
+        if result.ok:
+            self._tool_cache[key] = result
+        return result
+
+    def _cache_key(self, name: str, arguments: dict) -> tuple[str, str, str]:
+        """缓存 key：工具名 + 去掉 company 的参数 + 公司。
+
+        公司取参数里的显式值，没有就用默认公司；两次调用只要这两处一致
+        就视为同一份数据。
+        """
+        arguments = arguments if isinstance(arguments, dict) else {}
+        company = str(arguments.get("company") or self.default_company or "")
+        return (name, _canonical_arguments(arguments), company)
 
     def ask(self, question: str) -> Answer:
         """问一个问题，跑完整个循环后返回结构化回答。
@@ -165,7 +239,7 @@ class ResearchAgent:
                     name = call["function"].get("name") or "未知工具"
                     arguments = _parse_arguments(call["function"].get("arguments"))
                     try:
-                        result = run_tool(name, arguments, self.default_company)
+                        result = self._run_tool(name, arguments)
                     except Exception as error:  # noqa: BLE001 - 每个 id 都必须有回执
                         result = ToolResult(
                             ok=False, error=f"工具执行失败：{error}"
@@ -186,6 +260,7 @@ class ResearchAgent:
                         "as_of": result.as_of,
                         "error": result.error,
                         "sources": [source.id for source in result.sources],
+                        "cached": result.cached,
                     }
                     trace.append(step)
                     notify({"type": "tool", **step})
@@ -315,3 +390,13 @@ def _parse_arguments(raw) -> dict:
     except (TypeError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _canonical_arguments(arguments: dict) -> str:
+    """缓存 key 里的参数串：公司已单独入 key，其余参数按字典序序列化。"""
+    return json.dumps(
+        {key: value for key, value in arguments.items() if key != "company"},
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )

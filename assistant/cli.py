@@ -42,7 +42,10 @@ def format_answer(answer: Answer) -> str:
         lines.append("研究过程：")
         for step in answer.trace:
             arguments = json.dumps(step.get("arguments") or {}, ensure_ascii=False)
-            status = "ok" if step.get("ok") else "失败"
+            if step.get("cached"):
+                status = "复用缓存"
+            else:
+                status = "ok" if step.get("ok") else "失败"
             line = f"第 {step.get('round')} 轮 {step.get('name')}({arguments}) → {status}"
             if step.get("company"):
                 line += f" · 公司 {step['company']}"

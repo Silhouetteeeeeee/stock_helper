@@ -88,7 +88,7 @@ def test_loop_and_citation() -> None:
     assert answer.trace == [{
         "round": 1, "name": "get_finance", "arguments": {},
         "ok": True, "company": "605499", "as_of": "2026-06-30",
-        "error": None, "sources": [FIN.id],
+        "error": None, "sources": [FIN.id], "cached": False,
     }], answer.trace
     assert answer.issues == [] and answer.rounds == 2
     assert len(client.calls) == 2
@@ -394,6 +394,164 @@ def test_use_company() -> None:
         agent_mod.run_tool = original
 
 
+def test_tool_result_cache_reuses_same_call() -> None:
+    client = FakeClient([
+        response(tool_calls=[tool_call("c1", "get_finance", {})]),
+        response(content="第一次回答[[finance:605499:2026-06-30]]。"),
+        response(tool_calls=[tool_call("c2", "get_finance", {})]),
+        response(content="第二次回答[[finance:605499:2026-06-30]]。"),
+    ])
+    calls = []
+
+    def fake_run_tool(name, arguments, default_company=None):
+        calls.append((name, arguments, default_company))
+        return ToolResult(
+            ok=True, company="605499", as_of="2026-06-30", sources=(FIN,),
+            data={"revenue_yi": 124.43},
+        )
+
+    original = agent_mod.run_tool
+    agent_mod.run_tool = fake_run_tool
+    try:
+        research = agent_mod.ResearchAgent(client, default_company="605499")
+        first = research.ask("靠什么赚钱")
+        second = research.ask("再讲一次")
+    finally:
+        agent_mod.run_tool = original
+
+    assert len(calls) == 1, calls          # 第二次命中缓存，没有重新取数
+    assert first.trace[0]["cached"] is False
+    assert second.trace[0]["cached"] is True
+    tool_messages = [
+        message for message in client.calls[3]["messages"]
+        if message.get("role") == "tool"
+    ]
+    assert len(tool_messages) == 2, tool_messages
+    assert "revenue_yi" in tool_messages[0]["content"]
+    reused = json.loads(tool_messages[1]["content"])
+    assert reused["cached"] is True and "data" not in reused
+    assert reused["sources"][0]["id"] == FIN.id
+    assert [source.id for source in second.citations] == [FIN.id]
+
+
+def test_tool_cache_skips_failed_results() -> None:
+    client = FakeClient([
+        response(tool_calls=[tool_call("c1", "get_finance", {})]),
+        response(content="第一次没拿到。"),
+        response(tool_calls=[tool_call("c2", "get_finance", {})]),
+        response(content="第二次拿到了[[finance:605499:2026-06-30]]。"),
+    ])
+    calls = []
+
+    def fake_run_tool(name, arguments, default_company=None):
+        calls.append(name)
+        if len(calls) == 1:
+            return ToolResult(ok=False, company="605499", error="暂时没有数据")
+        return ToolResult(
+            ok=True, company="605499", as_of="2026-06-30", sources=(FIN,),
+            data={"revenue_yi": 124.43},
+        )
+
+    original = agent_mod.run_tool
+    agent_mod.run_tool = fake_run_tool
+    try:
+        research = agent_mod.ResearchAgent(client, default_company="605499")
+        research.ask("靠什么赚钱")
+        second = research.ask("再试一次")
+    finally:
+        agent_mod.run_tool = original
+
+    assert len(calls) == 2, calls          # 失败结果未入缓存，第二次重新取数
+    assert second.trace[0]["cached"] is False
+    assert second.trace[0]["ok"] is True
+    assert [source.id for source in second.citations] == [FIN.id]
+
+
+def test_realtime_tools_bypass_cache() -> None:
+    """估值/公告/业绩预告随行情和披露变化，长会话里不能一直用旧结果。"""
+    valuation = Source(
+        "valuation:605499:2026-10-24", "估值", "东鹏饮料 估值", "2026-10-24", ""
+    )
+    client = FakeClient([
+        response(tool_calls=[tool_call("c1", "get_valuation", {})]),
+        response(content="第一次[[valuation:605499:2026-10-24]]。"),
+        response(tool_calls=[tool_call("c2", "get_valuation", {})]),
+        response(content="第二次[[valuation:605499:2026-10-24]]。"),
+    ])
+    calls = []
+
+    def fake_run_tool(name, arguments, default_company=None):
+        calls.append(name)
+        return ToolResult(
+            ok=True, company="605499", as_of="2026-10-24",
+            sources=(valuation,), data={"pe": 25.0},
+        )
+
+    original = agent_mod.run_tool
+    agent_mod.run_tool = fake_run_tool
+    try:
+        research = agent_mod.ResearchAgent(client, default_company="605499")
+        research.ask("现在贵不贵")
+        second = research.ask("再看一眼")
+    finally:
+        agent_mod.run_tool = original
+
+    assert calls == ["get_valuation", "get_valuation"], calls
+    assert second.trace[0]["cached"] is False
+
+
+def test_restore_seeds_tool_cache() -> None:
+    """重开对话：回放出来的取数结果直接进缓存，不必重新取数、不再塞一份 data。"""
+    history = [
+        {"role": "user", "content": "靠什么赚钱"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "get_finance", "arguments": "{}"},
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "content": json.dumps({
+                "ok": True,
+                "sources": [FIN.to_dict()],
+                "company": "605499",
+                "as_of": "2026-06-30",
+                "data": {"revenue_yi": 124.43},
+            }, ensure_ascii=False),
+        },
+        {"role": "assistant", "content": "饮料是主力[[finance:605499:2026-06-30]]。"},
+    ]
+    client = FakeClient([
+        response(tool_calls=[tool_call("c2", "get_finance", {})]),
+        response(content="还是饮料[[finance:605499:2026-06-30]]。"),
+    ])
+
+    def fail_run_tool(*args, **kwargs):
+        raise AssertionError("命中回放缓存后不应重新取数")
+
+    original = agent_mod.run_tool
+    agent_mod.run_tool = fail_run_tool
+    try:
+        research = agent_mod.ResearchAgent(client, default_company="605499")
+        research.restore_history(history)
+        answer = research.ask("再讲讲")
+    finally:
+        agent_mod.run_tool = original
+
+    assert answer.trace[0]["cached"] is True
+    assert [source.id for source in answer.citations] == [FIN.id]
+    tool_messages = [
+        message for message in client.calls[1]["messages"]
+        if message.get("role") == "tool"
+    ]
+    assert '"cached": true' in tool_messages[-1]["content"]
+
+
 def main() -> None:
     test_loop_and_citation()
     test_unknown_citation_and_round_limit()
@@ -408,6 +566,10 @@ def main() -> None:
     test_prompt_is_skill_based()
     test_broad_question_loads_both_skills()
     test_use_company()
+    test_tool_result_cache_reuses_same_call()
+    test_tool_cache_skips_failed_results()
+    test_realtime_tools_bypass_cache()
+    test_restore_seeds_tool_cache()
     print("PASS")
     sys.stdout.flush()
     os._exit(0)

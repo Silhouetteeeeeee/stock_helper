@@ -335,7 +335,10 @@ if prompt and active_code:
                     streamed["text"] = ""
                     placeholder.markdown("_正在取数…_")
                 elif kind == "tool":
-                    outcome = "成功" if event.get("ok") else "失败"
+                    if event.get("cached"):
+                        outcome = "复用缓存"
+                    else:
+                        outcome = "成功" if event.get("ok") else "失败"
                     steps.caption(
                         f"已取数：{event.get('name')} · "
                         f"{event.get('company') or '--'} · {outcome}"

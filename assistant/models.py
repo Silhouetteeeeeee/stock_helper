@@ -42,6 +42,8 @@ class ToolResult:
     sources: tuple[Source, ...] = ()
     data: dict | None = None
     error: str | None = None
+    # 命中会话缓存：data 不重复发给模型，沿用同一会话里上一次的完整结果
+    cached: bool = False
 
     def to_message(self) -> str:
         """压成给模型看的 JSON；``None`` 字段不写，sources 总是列表。"""
@@ -49,6 +51,9 @@ class ToolResult:
             "ok": self.ok,
             "sources": [source.to_dict() for source in self.sources],
         }
+        if self.cached:
+            message["cached"] = True
+            message["note"] = "本次会话已取过相同参数的数据，data 不再重复返回，沿用上一次结果"
         for key in ("company", "as_of", "data", "error"):
             value = getattr(self, key)
             if value is not None:
