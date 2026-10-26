@@ -433,12 +433,65 @@ SECTOR_ROTATION = Skill(
 - 忽略盘中数据未收盘的事实。""",
 )
 
+STOCK_SCREENING = Skill(
+    name="stock_screening",
+    title="候选股票筛选：量化初筛、基本面复核与估值排序",
+    description="先用程序做量化筛选，再用基本面与新闻复核，最后结合估值和价格位置给出有条件的候选股票池",
+    instructions="""候选股票筛选：量化初筛、基本面复核与估值排序
+
+判断标准：量价筛出来的只是“值得继续看”的名单，不是推荐。量化分高只说明它在趋势、动量、位置或量能上有特征；能不能进入最终股票池，取决于基本面是否说得通、估值是否离谱、有没有未反映的坏消息。
+
+第一步：量化初筛。调用 screen_candidates（limit 默认 15）。看三件事：
+- universe 与 filters：样本量、剔除原因、成交额门槛。样本太小或剔除过多时要说明口径变化。
+- 每只股票的 score、reasons、risks：score 是量价综合分，不含基本面。
+- valuation：本地库里有的 PE/PB 直接引用；为 null 时写“需逐只取估值”，不能编。
+
+第二步：基本面复核。从候选里挑 3 到 5 只继续查，不要对十几只逐一展开（上下文和接口成本都不允许）。每只至少调用：
+- get_company_profile：确认行业与主营业务，避免把不同生意混在一起比较。
+- get_financial_history：收入、利润、现金流、ROE 的方向，至少看 3 年。
+- get_valuation：PE/PB 分位与同业对比。这是“估值排序”的依据。
+- get_announcements 或 get_earnings_forecasts：业绩预告、减持、诉讼、定增等会改变判断的公告。
+必要时再用 get_news_events 看是否已经有政策或产业事件反映在价格里。
+
+第三步：逐只写四个字段：
+1. 入选理由：量价特征（引用 reasons 里的具体数字）加基本面依据（增速、利润率、现金流、行业地位）。两边都必须有，只有量价的一律标注“仅量价入选”。
+2. 估值：PE/PB 与历史分位、同业中位对比。数据缺失写「资料不足」，不要用“估值合理”这种没有数字的话。
+3. 风险：引用 risks，再补基本面风险（业绩下滑、现金流紧张、负债、减持、解禁、商誉）。
+4. 需要继续核查的问题：具体到要查什么数据或公告，例如“下季度毛利率能否维持”“应收账款增速是否快于收入”“新产能投产时间”。
+
+第四步：排序。不要按量化分直接排。综合三个维度给出相对顺序并说明理由：
+- 基本面质量与可预测性（优先）。
+- 估值与历史分位的合理性。
+- 价格位置（pos_60d、距 60 日高点、是否已经大幅上涨）。
+量化分只作为同等条件下的参考。排序要写成“相对顺序加理由”，不说“第一名一定最好”。
+
+第五步：给出观察名单的维护方法。写清哪些条件下应该把某只股票移出名单（例如跌破 60 日均线、估值分位超过 80%、业绩预告低于预期），方便下次复盘。
+
+回答结构：
+1. 一句话结论：这次筛出几只、最终值得继续研究几只。
+2. 股票池：代码、名称、板块、量化分、价格位置、入选理由（量价 + 基本面）。
+3. 估值对比：PE/PB、历史分位、同业中位。缺失写资料不足。
+4. 主要风险。
+5. 需要继续核查的问题。
+6. 排序与理由：相对顺序，不写“买入”。
+结尾写“以上是筛选与复核过程，不构成投资建议”。
+
+取数：screen_candidates 一次；基本面用 get_company_profile、get_financial_history、get_valuation、get_announcements、get_earnings_forecasts。数据缺失写「资料不足」，不要用记忆或行业平均值补位。
+
+禁止：
+- 把量化分当成买入信号或收益预测。
+- 不给基本面依据就下“值得关注”的结论。
+- 编造 PE、PB、增速、公告内容。
+- 对十几只股票逐一展开，把上下文耗光。
+- 输出“必涨”“稳赚”“目标价”这类说法。""",
+)
+
 SKILLS: dict[str, Skill] = {
     skill.name: skill
     for skill in (
         BUSINESS_MODEL, MOAT, OPERATING_HISTORY, FINANCIAL_SAFETY,
         GROWTH_OUTLOOK, MANAGEMENT, VALUATION, MARGIN_OF_SAFETY,
-        MARKET_VIEW, NEWS_EVENTS, SECTOR_ROTATION,
+        MARKET_VIEW, NEWS_EVENTS, SECTOR_ROTATION, STOCK_SCREENING,
     )
 }
 

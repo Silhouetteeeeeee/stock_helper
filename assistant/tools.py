@@ -40,6 +40,7 @@ from stock.management import build_management
 from stock.market import build_market_overview
 from research.market_state import classify_market
 from research.news_events import build_news_events
+from research.screening import screen_candidates as build_screen
 from research.sector_rotation import build_sector_rotation
 from stock.peers import build_peers
 from stock.segments import ensure_segments, segments_from_rows
@@ -625,6 +626,38 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "screen_candidates",
+            "description": (
+                "量化选股：全市场剔除 ST/退市/新股/停牌与成交额过小的股票，"
+                "按板块配额取样后，用均线位置、20/60 日涨幅、60 日区间位置、"
+                "成交额放大倍数合成量化分，返回候选股、入选理由、风险与本地 PE/PB。"
+                "回答“有什么股票可以关注”“帮我筛选候选股”“今天哪些票值得研究”时调用；"
+                "不需要公司参数。候选股的基本面与估值必须再用 get_finance、"
+                "get_valuation、get_announcements 逐只复核"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 3,
+                        "maximum": 30,
+                        "description": "候选股条数，默认 15",
+                    },
+                    "min_amount_yi": {
+                        "type": "number",
+                        "minimum": 0.1,
+                        "maximum": 50,
+                        "description": "最低成交额门槛（亿元），默认 1",
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 
@@ -723,6 +756,7 @@ _MARKET_WORDS = (
     "港股", "美联储", "降息", "降准", "关税", "消息面", "利好", "利空",
     "影响哪些行业", "行业轮动", "强势行业", "板块强弱", "主线",
     "哪些行业", "什么行业", "走强", "走弱", "热点能否持续",
+    "选股", "筛选", "候选股", "股票池", "值得研究", "值得关注",
 )
 
 
@@ -760,6 +794,8 @@ def run_tool(
             return _news_events_tool(arguments)
         if name == "get_sector_rotation":
             return _sector_rotation_tool(arguments)
+        if name == "screen_candidates":
+            return _screen_candidates_tool(arguments)
 
         code, error, _ = resolve_code(arguments.get("company"), default_company)
         if code is None:
@@ -1012,6 +1048,60 @@ def _sector_rotation_tool(arguments: dict) -> ToolResult:
         ok=True,
         as_of=result.get("as_of"),
         sources=tuple(_sector_sources(result)),
+        data=result,
+    )
+
+
+def _screen_sources(result: dict) -> list[Source]:
+    """选股用到全市场快照与个股日线，两段各登记一条来源。"""
+    fetched = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    as_of = str(result.get("as_of") or "")
+    return [
+        Source(
+            f"screen:spot:{as_of[:10]}",
+            "全市场快照",
+            "新浪 A 股行情",
+            as_of,
+            fetched,
+        ),
+        Source(
+            f"screen:daily:{as_of[:10]}",
+            "个股日线",
+            "新浪日线（不复权）",
+            as_of,
+            fetched,
+        ),
+    ]
+
+
+def _screen_candidates_tool(arguments: dict) -> ToolResult:
+    try:
+        limit = int(arguments.get("limit") or 15)
+    except (TypeError, ValueError):
+        limit = 15
+    limit = max(3, min(30, limit))
+    try:
+        min_amount = float(arguments.get("min_amount_yi") or 1.0)
+    except (TypeError, ValueError):
+        min_amount = 1.0
+    min_amount = max(0.1, min(50.0, min_amount))
+
+    try:
+        result = build_screen(limit=limit, min_amount_yi=min_amount)
+    except Exception as error:  # noqa: BLE001 - 数据源异常交给模型说明
+        return ToolResult(ok=False, error=f"量化筛选失败：{error}")
+
+    if not result.get("candidates"):
+        detail = "；".join(
+            f"{key}：{value}" for key, value in (result.get("errors") or {}).items()
+        )
+        return ToolResult(
+            ok=False, error=f"量化筛选失败：{detail or '没有符合条件的股票'}"
+        )
+    return ToolResult(
+        ok=True,
+        as_of=result.get("as_of"),
+        sources=tuple(_screen_sources(result)),
         data=result,
     )
 
