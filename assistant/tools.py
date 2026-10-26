@@ -40,6 +40,7 @@ from stock.management import build_management
 from stock.market import build_market_overview
 from research.market_state import classify_market
 from research.news_events import build_news_events
+from research.sector_rotation import build_sector_rotation
 from stock.peers import build_peers
 from stock.segments import ensure_segments, segments_from_rows
 from stock.shareholders import PAGE_URL as SHAREHOLDER_URL
@@ -599,6 +600,31 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_sector_rotation",
+            "description": (
+                "行业轮动：90 个同花顺行业相对沪深300的 5/20/60 日超额收益、"
+                "近 10 日跑赢天数、上涨家数占比、成交额放大倍数、领涨股，"
+                "以及持续强势/由弱转强/由强转弱/持续弱势分类和反转信号。"
+                "回答“哪些行业强势”“板块轮动到哪”“热点能不能持续”“哪个板块在走弱”"
+                "时调用；不需要公司参数。找驱动因素时再配合 get_news_events 对照"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 3,
+                        "maximum": 20,
+                        "description": "强势行业返回条数，默认 8",
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 
@@ -695,7 +721,8 @@ _MARKET_WORDS = (
     "热点", "后市", "减仓", "加仓", "轻仓", "重仓", "空仓", "满仓",
     "情绪", "走势", "怎么走", "新闻", "政策", "事件", "海外", "美股",
     "港股", "美联储", "降息", "降准", "关税", "消息面", "利好", "利空",
-    "影响哪些行业",
+    "影响哪些行业", "行业轮动", "强势行业", "板块强弱", "主线",
+    "哪些行业", "什么行业", "走强", "走弱", "热点能否持续",
 )
 
 
@@ -731,6 +758,8 @@ def run_tool(
             return _market_overview_tool()
         if name == "get_news_events":
             return _news_events_tool(arguments)
+        if name == "get_sector_rotation":
+            return _sector_rotation_tool(arguments)
 
         code, error, _ = resolve_code(arguments.get("company"), default_company)
         if code is None:
@@ -933,6 +962,56 @@ def _news_events_tool(arguments: dict) -> ToolResult:
         ok=True,
         as_of=result.get("as_of"),
         sources=tuple(_news_event_sources(result)),
+        data=result,
+    )
+
+
+def _sector_sources(result: dict) -> list[Source]:
+    """行业轮动用到两套数据：板块指数与基准指数，各登记一条来源。"""
+    fetched = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    as_of = str(result.get("trade_date") or result.get("as_of") or "")
+    sources = [
+        Source(
+            f"sector:ths:{as_of}",
+            "行业板块",
+            "同花顺行业指数",
+            as_of,
+            fetched,
+        ),
+        Source(
+            "sector:benchmark:sh000300",
+            "基准指数",
+            str(result.get("benchmark") or "沪深300"),
+            as_of,
+            fetched,
+        ),
+    ]
+    return sources
+
+
+def _sector_rotation_tool(arguments: dict) -> ToolResult:
+    try:
+        limit = int(arguments.get("limit") or 8)
+    except (TypeError, ValueError):
+        limit = 8
+    limit = max(3, min(20, limit))
+    try:
+        result = build_sector_rotation(limit=limit)
+    except Exception as error:  # noqa: BLE001 - 数据源异常交给模型说明
+        return ToolResult(ok=False, error=f"行业轮动获取失败：{error}")
+
+    if not result.get("ranking"):
+        detail = "；".join(
+            f"{key}：{value}" for key, value in (result.get("errors") or {}).items()
+        )
+        return ToolResult(
+            ok=False,
+            error=f"行业轮动获取失败：{detail or '没有可用板块数据'}",
+        )
+    return ToolResult(
+        ok=True,
+        as_of=result.get("as_of"),
+        sources=tuple(_sector_sources(result)),
         data=result,
     )
 

@@ -321,6 +321,8 @@ def test_prompt_is_skill_based() -> None:
     assert "get_market_overview" in SYSTEM_PROMPT
     assert "news_events" in SYSTEM_PROMPT
     assert "get_news_events" in SYSTEM_PROMPT
+    assert "sector_rotation" in SYSTEM_PROMPT
+    assert "get_sector_rotation" in SYSTEM_PROMPT
     # 具体判据必须只在 skill 里，不能回到系统提示词
     for phrase in ("第一问", "第二问", "护城河", "三句话", "品牌", "可证伪"):
         assert phrase not in SYSTEM_PROMPT, phrase
