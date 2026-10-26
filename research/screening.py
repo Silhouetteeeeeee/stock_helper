@@ -9,7 +9,7 @@
 
 本模块只回答"哪些股票在量价上值得继续看"，不判断基本面好坏，也不给估值
 结论。估值与基本面复核交给助手用 get_finance / get_valuation /
-get_announcements 逐只去做；本地估值库里有的股票会顺带带上 PE/PB 供参考。
+get_announcements 逐只去做；量化筛选只给最终名单逐只补最新 PE/PB 供参考。
 """
 
 from __future__ import annotations
@@ -20,10 +20,11 @@ from datetime import datetime
 
 import akshare as ak
 
-from common.db_utils import query_all
+from stock.valuation import latest_valuation
 
 HISTORY_DAYS = 140
 MAX_WORKERS = 10
+VALUATION_WORKERS = 4   # 补估值是逐只联网，别一次打太猛
 MIN_BARS = 40          # 少于 40 根日线，均线和区间指标没意义
 DEFAULT_LIMIT = 15
 MAX_PER_BOARD = 4      # 最终候选里同一板块最多几只，避免清一色银行股
@@ -369,31 +370,31 @@ def _risks(stats: dict) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# 本地估值（能查到就带上，查不到留给助手按需取）
+# 最终名单补估值（候选有几十只，只对入选的这几只联网取最新一行）
 # ---------------------------------------------------------------------------
-def _valuations(codes: list[str]) -> dict[str, dict]:
-    digits = [code[2:] if code[:2].isalpha() else code for code in codes]
-    if not digits:
-        return {}
-    placeholders = ",".join("?" for _ in digits)
-    try:
-        rows = query_all(
-            f"""SELECT code, trade_date, pe_ttm, pb_mrq, total_mv
-                FROM val_history WHERE code IN ({placeholders})
-                ORDER BY code, trade_date""",
-            tuple(digits),
-        )
-    except Exception:  # noqa: BLE001 - 估值库缺失不影响筛选
-        return {}
-    latest: dict[str, dict] = {}
-    for row in rows:
-        latest[str(row["code"])] = {
-            "as_of": row["trade_date"],
-            "pe_ttm": _round(row["pe_ttm"]),
-            "pb_mrq": _round(row["pb_mrq"]),
-            "total_mv_yi": _round(row["total_mv"] / 1e8) if row["total_mv"] else None,
+def _fill_valuations(items: list[dict]) -> None:
+    """逐只补最新 PE/PB；取不到的保持 None，不影响筛选结果。"""
+    if not items:
+        return
+
+    def load(item: dict) -> tuple[dict, dict | None]:
+        try:
+            row = latest_valuation(str(item.get("code") or ""))
+        except Exception:  # noqa: BLE001 - 单只取不到估值不拖累名单
+            return item, None
+        return item, {
+            "as_of": row.get("trade_date"),
+            "pe_ttm": _round(row.get("pe_ttm")),
+            "pb_mrq": _round(row.get("pb_mrq")),
+            "total_mv_yi": _round(row.get("total_mv") / 1e8) if row.get("total_mv") else None,
+            "stale": bool(row.get("stale")),
         }
-    return latest
+
+    workers = max(1, min(VALUATION_WORKERS, len(items)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for item, valuation in pool.map(load, items):
+            if valuation is not None:
+                item["valuation"] = valuation
 
 
 # ---------------------------------------------------------------------------
@@ -477,8 +478,6 @@ def screen_candidates(
         )
         errors["history"] = f"日线 {len(history_errors)} 只失败，例如 {sample}"
 
-    valuations = _valuations(codes)
-
     candidates: list[dict] = []
     for row in picked:
         code = str(row.get("代码") or "").strip().lower()
@@ -486,16 +485,24 @@ def screen_candidates(
         item["score"] = score_stock(item)
         item["reasons"] = _reasons(item)
         item["risks"] = _risks(item)
-        item["valuation"] = valuations.get(code[2:] if code[:2].isalpha() else code)
+        item["valuation"] = None
         if item["score"] is None:
             continue
         candidates.append(item)
 
     candidates.sort(key=lambda item: (item["score"], item.get("spot_amount_yi") or 0), reverse=True)
-    top = [_public(item) for item in diversify(candidates, max(1, min(limit, 30)))]
+    final = diversify(candidates, max(1, min(limit, 30)))
+    _fill_valuations(final)
+    top = [_public(item) for item in final]
 
-    if not valuations:
-        notes.append("本地估值库没有这些股票的 PE/PB，估值要逐只用 get_valuation 取")
+    missing_valuation = [item["code"] for item in final if not item.get("valuation")]
+    if missing_valuation:
+        sample = "、".join(missing_valuation[:3])
+        more = " 等" if len(missing_valuation) > 3 else ""
+        notes.append(
+            f"最终名单里有 {len(missing_valuation)} 只没取到 PE/PB（{sample}{more}），"
+            "需要时让助手用 get_valuation 再查"
+        )
     missing = [
         "PE/PB 历史分位",
         "营收与利润增速、ROE、现金流",

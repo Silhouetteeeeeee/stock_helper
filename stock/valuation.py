@@ -9,9 +9,10 @@
 * 同一张表按"行业板块 + 交易日"过滤，可以拿到整个行业所有公司当天的估值，
   用于同业对比。
 
-对外三个函数：
+对外四个函数：
 
 * ``ensure_valuation(code)``  按需取数，本地缓存若干小时
+* ``latest_valuation(code)``  只取最新一日的估值，不拉同业（批量场景用）
 * ``build_valuation(code)``   生成分析用摘要：分位、同业排名、提示
 * ``format_valuation(...)``   渲染成一段可读文本
 
@@ -96,6 +97,27 @@ def ensure_valuation(
         "stale": stale,
         "peers_error": peers_error,
     }
+
+
+def latest_valuation(
+    code: str,
+    max_age_hours: float = DEFAULT_CACHE_HOURS,
+    force: bool = False,
+) -> dict:
+    """只取某公司最新一日的估值，不拉同业。
+
+    给批量场景用（比如筛选的最终名单）：每只最多一次个股请求，缓存命中时
+    只读本地库。返回最近一个交易日的一行，``stale`` 表示网络失败、用的是
+    本地旧缓存；取不到数据抛 ``ValuationError``，由调用方决定是否跳过。
+    """
+    code = normalize_stock_code(code)
+    if not code:
+        raise ValuationError("请输入股票代码")
+
+    history, stale = _ensure_history(code, max_age_hours, force)
+    if not history:
+        raise ValuationError(f"{code}：没有取到估值数据")
+    return {**history[-1], "stale": stale}
 
 
 def build_valuation(

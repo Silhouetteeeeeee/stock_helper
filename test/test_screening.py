@@ -172,30 +172,44 @@ def test_diversify_caps_per_board() -> None:
     assert len(picked_wide) == 4
 
 
-def test_valuations_use_latest_row() -> None:
-    original = screening.query_all
+def test_fill_valuations_for_final_list() -> None:
+    original = screening.latest_valuation
+    calls: list[str] = []
 
-    class Row(dict):
-        def __getitem__(self, key):
-            return super().__getitem__(key)
+    def fake_latest(code: str) -> dict:
+        calls.append(code)
+        if code == "sz300001":
+            raise RuntimeError("估值接口超时")
+        return {
+            "trade_date": "2026-10-24",
+            "pe_ttm": 13.0,
+            "pb_mrq": 1.2,
+            "total_mv": 1.1e11,
+            "stale": False,
+        }
 
-    rows = [
-        Row(code="600000", trade_date="2026-10-23", pe_ttm=12.0, pb_mrq=1.1, total_mv=1e11),
-        Row(code="600000", trade_date="2026-10-24", pe_ttm=13.0, pb_mrq=1.2, total_mv=1.1e11),
+    screening.latest_valuation = fake_latest
+    items = [
+        {"code": "sh600000", "valuation": None},
+        {"code": "sz300001", "valuation": None},
     ]
-    screening.query_all = lambda sql, params=(): rows
     try:
-        values = screening._valuations(["sh600000", "sz000001"])
+        screening._fill_valuations(items)
     finally:
-        screening.query_all = original
-    assert values["600000"]["pe_ttm"] == 13.0
-    assert values["600000"]["as_of"] == "2026-10-24"
-    assert values["600000"]["total_mv_yi"] == 1100.0
+        screening.latest_valuation = original
+
+    assert sorted(calls) == ["sh600000", "sz300001"], calls
+    assert items[0]["valuation"]["pe_ttm"] == 13.0
+    assert items[0]["valuation"]["as_of"] == "2026-10-24"
+    assert items[0]["valuation"]["total_mv_yi"] == 1100.0
+    assert items[0]["valuation"]["stale"] is False
+    # 取不到的那只保持原样，不拖累整份名单
+    assert items[1]["valuation"] is None
 
 
 def test_screen_candidates() -> None:
     original = screening.ak
-    original_query = screening.query_all
+    original_valuation = screening.latest_valuation
     bars = {
         "sh600000": _bars(80, step=1.01),
         "sz000001": _bars(80, step=0.995),
@@ -218,13 +232,19 @@ def test_screen_candidates() -> None:
             return Frame(bars[symbol])
 
     screening.ak = FakeAk
-    screening.query_all = lambda sql, params=(): []
+    screening.latest_valuation = lambda code: {
+        "trade_date": "2026-10-24",
+        "pe_ttm": 12.0,
+        "pb_mrq": 1.1,
+        "total_mv": 1e11,
+        "stale": False,
+    }
     screening._cache.update({"at": None, "key": None, "data": None})
     try:
         result = screening.screen_candidates(limit=5)
     finally:
         screening.ak = original
-        screening.query_all = original_query
+        screening.latest_valuation = original_valuation
 
     names = [item["name"] for item in result["candidates"]]
     assert names == ["上涨股份"], names
@@ -234,11 +254,13 @@ def test_screen_candidates() -> None:
     assert result["filters"]["shortlisted"] == 3
     assert result["universe"]["scanned"] == 3
     assert result["missing"]
+    # 只有最终名单拿到估值
+    assert result["candidates"][0]["valuation"]["pe_ttm"] == 12.0
 
 
 def test_screen_candidates_is_cached() -> None:
     original = screening.ak
-    original_query = screening.query_all
+    original_valuation = screening.latest_valuation
     calls: list[int] = []
 
     class FakeAk:
@@ -252,7 +274,13 @@ def test_screen_candidates_is_cached() -> None:
             return Frame(_bars(80, step=1.01))
 
     screening.ak = FakeAk
-    screening.query_all = lambda sql, params=(): []
+    screening.latest_valuation = lambda code: {
+        "trade_date": "2026-10-24",
+        "pe_ttm": 12.0,
+        "pb_mrq": 1.1,
+        "total_mv": 1e11,
+        "stale": False,
+    }
     screening._cache.update({"at": None, "key": None, "data": None})
     try:
         first = screening.screen_candidates(limit=3)
@@ -260,7 +288,7 @@ def test_screen_candidates_is_cached() -> None:
         third = screening.screen_candidates(limit=3, force=True)
     finally:
         screening.ak = original
-        screening.query_all = original_query
+        screening.latest_valuation = original_valuation
     assert first is second
     assert third is not first
     assert len(calls) == 2, calls
@@ -293,7 +321,7 @@ def main() -> None:
     test_score_stock_directions()
     test_risks_and_reasons()
     test_diversify_caps_per_board()
-    test_valuations_use_latest_row()
+    test_fill_valuations_for_final_list()
     test_screen_candidates()
     test_screen_candidates_is_cached()
     test_screen_candidates_spot_failure()

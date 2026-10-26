@@ -211,6 +211,19 @@ def main() -> None:
     else:
         raise AssertionError("没有缓存时应该报错")
 
+    # -- latest_valuation：只取最新一行，不碰同业 ---------------------------
+    val.DB_PATH = os.path.join(tempfile.mkdtemp(), "latest.db")
+    calls.update(history=0, peers=0)
+    val.fetch_history = fake_history  # type: ignore[assignment]
+    row = val.latest_valuation("SH605499")
+    assert row["trade_date"] == HISTORY[-1]["trade_date"], row
+    assert row["pe_ttm"] == HISTORY[-1]["pe_ttm"], row
+    assert row["stale"] is False, row
+    assert calls == {"history": 1, "peers": 0}, calls
+    # 缓存命中就不重复抓
+    val.latest_valuation(CODE)
+    assert calls == {"history": 1, "peers": 0}, calls
+
     try:
         val.build_valuation("")
     except val.ValuationError:
