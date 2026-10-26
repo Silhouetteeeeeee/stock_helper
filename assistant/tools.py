@@ -13,6 +13,7 @@ from __future__ import annotations
 import copy
 import math
 import re
+from datetime import datetime
 
 from stock.analyst_views import build_analyst_views
 from stock.announcements import build_announcements
@@ -36,6 +37,7 @@ from stock.pledges import build_pledges
 from stock.research import build_research, build_research_notes
 from stock.management import PAGE_URL as MANAGEMENT_URL
 from stock.management import build_management
+from stock.market import build_market_overview
 from stock.peers import build_peers
 from stock.segments import ensure_segments, segments_from_rows
 from stock.shareholders import PAGE_URL as SHAREHOLDER_URL
@@ -553,6 +555,23 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_market_overview",
+            "description": (
+                "A股大盘全景：主要指数涨跌与成交额、涨跌家数与涨跌停、"
+                "两市成交额与量能、主要指数均线与区间表现、行业板块涨跌与净流入、"
+                "连板高度与涨停行业、财联社快讯。回答“今天大盘怎么看”“市场情绪如何”"
+                "“有什么操作建议”时先调用；不需要公司参数"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 
@@ -639,6 +658,27 @@ def find_company_in_text(text) -> tuple[str, str] | None:
     return None if best is None else (best[1], best[2])
 
 
+# 大盘不是一家公司：页面用这个占位代码开一段不绑定公司的会话
+MARKET_CODE = "MARKET"
+MARKET_NAME = "大盘"
+_MARKET_WORDS = (
+    "大盘", "指数", "上证", "深证", "创业板", "科创", "沪深300", "中证",
+    "两市", "A股", "a股", "市场", "行情", "板块", "涨停", "跌停",
+    "成交量", "成交额", "仓位", "操作建议", "北向", "轮动", "题材",
+    "热点", "后市", "减仓", "加仓", "轻仓", "重仓", "空仓", "满仓",
+    "情绪", "走势", "怎么走",
+)
+
+
+def is_market_question(text) -> bool:
+    """这句话是不是在问大盘/市场。
+
+    调用方先做公司识别：同一句话里提到了公司，就以公司为准，不按大盘处理。
+    """
+    text = str(text or "").strip()
+    return bool(text) and any(word in text for word in _MARKET_WORDS)
+
+
 # ---------------------------------------------------------------------------
 # 工具执行
 # ---------------------------------------------------------------------------
@@ -657,6 +697,9 @@ def run_tool(
             return _load_skill_tool(arguments)
         if name == "resolve_company":
             return _resolve_company_tool(arguments)
+        # 大盘数据不属于任何一家公司，必须先于公司解析
+        if name == "get_market_overview":
+            return _market_overview_tool()
 
         code, error, _ = resolve_code(arguments.get("company"), default_company)
         if code is None:
@@ -736,6 +779,76 @@ def _resolve_company_tool(arguments: dict) -> ToolResult:
             "name": stock.name if stock is not None else None,
             "candidates": candidates,
         },
+    )
+
+
+def _market_stamp(value) -> str:
+    digits = re.sub(r"\D", "", str(value or ""))
+    return digits or "latest"
+
+
+def _market_date(value) -> str:
+    text = str(value or "").strip()
+    return text[:10] if len(text) >= 10 else "latest"
+
+
+def _market_sources(overview: dict) -> list[Source]:
+    """每块盘面各登记一条来源；没有数据的段不登记。"""
+    as_of = str(overview.get("as_of") or "")
+    fetched = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    stamp = _market_stamp(as_of)
+    date = _market_date(as_of)
+    sources: list[Source] = []
+    if overview.get("indices"):
+        sources.append(Source(
+            f"market:index:{stamp}", "指数行情", "新浪财经", as_of, fetched,
+        ))
+    if overview.get("breadth"):
+        sources.append(Source(
+            f"market:breadth:{stamp}", "市场宽度", "乐咕乐股", as_of, fetched,
+        ))
+    trend = overview.get("trend") or []
+    if trend:
+        trend_date = max(str(item.get("date") or "") for item in trend)
+        sources.append(Source(
+            f"market:trend:{trend_date or date}", "指数日线", "新浪财经",
+            trend_date or date, fetched,
+        ))
+    if overview.get("sectors"):
+        sources.append(Source(
+            f"market:sector:{stamp}", "行业板块", "同花顺", as_of, fetched,
+        ))
+    if overview.get("limit_up"):
+        sources.append(Source(
+            f"market:limitup:{date}", "涨停池", "东方财富", date, fetched,
+        ))
+    if overview.get("news"):
+        sources.append(Source(
+            f"market:news:{stamp}", "市场快讯", "财联社", as_of, fetched,
+        ))
+    return sources
+
+
+def _market_overview_tool() -> ToolResult:
+    try:
+        overview = build_market_overview()
+    except Exception as error:  # noqa: BLE001 - 数据源异常交给模型说明
+        return ToolResult(ok=False, error=f"大盘数据获取失败：{error}")
+    has_data = any(
+        overview.get(key)
+        for key in ("indices", "breadth", "trend", "sectors", "limit_up", "news")
+    )
+    if not has_data:
+        detail = "；".join(
+            f"{key}：{value}"
+            for key, value in (overview.get("errors") or {}).items()
+        )
+        return ToolResult(ok=False, error=f"大盘数据获取失败：{detail or '没有可用数据'}")
+    return ToolResult(
+        ok=True,
+        as_of=overview.get("as_of"),
+        sources=tuple(_market_sources(overview)),
+        data=overview,
     )
 
 

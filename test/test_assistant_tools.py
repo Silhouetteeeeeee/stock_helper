@@ -151,6 +151,7 @@ def test_schemas() -> None:
         "get_earnings_forecasts", "get_institutional_research",
         "get_research_notes", "get_analyst_views",
         "get_announcements", "get_valuation", "calc_valuation",
+        "get_market_overview",
     ], names
     for item in tools.schemas():
         assert item["type"] == "function"
@@ -408,6 +409,10 @@ def test_load_skill_tool() -> None:
     assert eighth.ok is True, eighth
     assert "安全边际" in eighth.data["instructions"]
 
+    market = tools.run_tool("load_skill", {"name": "market_view"})
+    assert market.ok is True, market
+    assert "市场宽度" in market.data["instructions"]
+
     missing = tools.run_tool("load_skill", {"name": "q9"})
     assert missing.ok is False
     assert "business_model" in missing.error and "moat" in missing.error, missing
@@ -419,6 +424,7 @@ def test_load_skill_tool() -> None:
     assert schema["function"]["parameters"]["properties"]["name"]["enum"] == [
         "business_model", "moat", "operating_history", "financial_safety",
         "growth_outlook", "management", "valuation", "margin_of_safety",
+        "market_view",
     ]
 
 

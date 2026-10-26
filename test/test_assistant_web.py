@@ -343,6 +343,46 @@ def test_webapp_mentions_company() -> None:
         agent_module.build_client = original
 
 
+def test_webapp_market_question() -> None:
+    """大盘问题不需要公司：不提示补公司，开一段独立的大盘会话。"""
+    if AppTest is None:
+        return
+    _clear_store()
+
+    from assistant import agent as agent_module
+    from assistant.tools import MARKET_CODE, MARKET_NAME
+
+    at = _app()
+    at.run()
+    assert not at.exception, list(at.exception)
+
+    def _offline_client():
+        raise RuntimeError("测试环境不调用模型")
+
+    original = agent_module.build_client
+    agent_module.build_client = _offline_client
+    try:
+        at.chat_input[0].set_value("今天大盘怎么看 有什么操作建议").run()
+        assert not at.exception, list(at.exception)
+        # 没提公司也能提问：路由到大盘，而不是被“请补公司”拦住
+        assert at.session_state["active_code"] == MARKET_CODE
+        assert at.session_state["active_name"] == MARKET_NAME
+        assert [title.value for title in at.title] == ["投资助手 · 大盘"]
+        assert not any("没认出你问的是哪家公司" in item.value for item in at.warning)
+        assert any("助手不可用" in item.value for item in at.error)
+    finally:
+        agent_module.build_client = original
+
+    # 即使模型不可用，问题也留在大盘会话里
+    store = ConversationStore()
+    saved = store.recent(primary_code=MARKET_CODE)
+    assert len(saved) == 1, saved
+    assert saved[0].title.startswith("大盘 · 今天大盘怎么看")
+    assert [message["role"] for message in store.messages(saved[0].id)] == [
+        "user", "error",
+    ]
+
+
 def test_kill_on_close_job() -> None:
     """父进程被强杀（IDE 终止）时，Windows 也要把服务子进程一起带走。"""
     if os.name != "nt":
@@ -377,6 +417,7 @@ def main() -> None:
     test_webapp_flow()
     test_webapp_resume_and_delete()
     test_webapp_mentions_company()
+    test_webapp_market_question()
     print("PASS")
     sys.stdout.flush()
     os._exit(0)

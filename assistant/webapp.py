@@ -17,9 +17,14 @@ from assistant.agent import ResearchAgent, build_client
 from assistant.env import load_env
 from assistant.render import citation_html, source_lines, stream_text
 from assistant.store import ConversationStore, build_title
-from assistant.tools import find_company_in_text
+from assistant.tools import (
+    MARKET_CODE,
+    MARKET_NAME,
+    find_company_in_text,
+    is_market_question,
+)
 
-WELCOME = "直接提问，提到哪家公司就聊哪家，例如「紫金矿业靠什么赚钱」「东鹏饮料毛利率为什么下滑」。回答会标注数据来源。"
+WELCOME = "直接提问，提到哪家公司就聊哪家，例如「紫金矿业靠什么赚钱」「东鹏饮料毛利率为什么下滑」；也可以问「今天大盘怎么看」。回答会标注数据来源。"
 MAX_ISSUES = 2
 RECENT_LIMIT = 50
 STREAM_INTERVAL = 0.08
@@ -116,6 +121,16 @@ def _switch_company(code: str, name: str) -> None:
         st.session_state.notice = f"已切换到 {name or code}（{code}），开始新对话。"
 
 
+def _switch_market() -> None:
+    """大盘问题不绑定任何公司；换到市场话题就开新对话。"""
+    if st.session_state.get("active_code") == MARKET_CODE:
+        return
+    st.session_state.active_code = MARKET_CODE
+    st.session_state.active_name = MARKET_NAME
+    _reset_conversation()
+    st.session_state.notice = "已切换到大盘，开始新对话。"
+
+
 def _open_conversation(item) -> None:
     """从最近列表恢复一段对话；下一轮提问时再回放原始消息。"""
     st.session_state.active_code = item.primary_code or None
@@ -150,7 +165,9 @@ def _agent_for(code: str):
     if agent is not None and st.session_state.get("agent_code") == code:
         return agent
     try:
-        agent = ResearchAgent(build_client(), default_company=code)
+        # 大盘会话不设默认公司，避免公司工具把 MARKET 当成股票代码
+        default_company = None if code == MARKET_CODE else code
+        agent = ResearchAgent(build_client(), default_company=default_company)
         conversation_id = st.session_state.get("conversation_id")
         if conversation_id:
             agent.restore_history(_raw_history(conversation_id))
@@ -244,7 +261,10 @@ _init_state()
 prompt = st.chat_input("问一句，如：紫金矿业靠什么赚钱？")
 mentioned = find_company_in_text(prompt) if prompt else None
 if mentioned:
+    # 提到了公司就以公司为准，即使句子里还有“大盘”“走势”之类的词
     _switch_company(*mentioned)
+elif prompt and is_market_question(prompt):
+    _switch_market()
 
 active_code = st.session_state.get("active_code")
 active_name = st.session_state.get("active_name") or active_code
@@ -291,7 +311,10 @@ if not st.session_state.messages:
 _render_history()
 
 if not active_code:
-    st.info("在问题里带上公司名或代码即可，例如「紫金矿业靠什么赚钱」。")
+    st.info(
+        "在问题里带上公司名或代码即可，例如「紫金矿业靠什么赚钱」；"
+        "也可以直接问「今天大盘怎么看」。"
+    )
 
 if prompt and not active_code:
     st.warning("没认出你问的是哪家公司，请在问题里带上公司名或六位代码。")

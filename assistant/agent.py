@@ -41,6 +41,7 @@ UNCACHED_TOOLS = frozenset({
     "get_valuation",
     "get_announcements",
     "get_earnings_forecasts",
+    "get_market_overview",
 })
 
 # 上下文预算：按 DeepSeek 128K 留出 thinking、回答和本轮继续取数的空间。
@@ -608,7 +609,7 @@ class ResearchAgent:
     # 内部
     # ------------------------------------------------------------------
     def _system_text(self) -> str:
-        company = self.default_company or "尚未指定"
+        company = self.default_company or "未指定（大盘/市场问题不需要公司）"
         text = f"{SYSTEM_PROMPT}\n\n当前默认公司：{company}"
         if self._summary:
             text += f"\n\n此前对话摘要（较早轮次已省略）：\n{self._summary}"
