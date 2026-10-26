@@ -54,7 +54,11 @@ def test_market_tool_does_not_need_company() -> None:
     assert result.ok is True
     assert result.company is None
     assert result.as_of == "2026-10-26 13:35:00"
-    assert result.data == OVERVIEW
+    assert {key: value for key, value in result.data.items() if key != "state"} == OVERVIEW
+    state = result.data["state"]
+    assert state["state"] in ("强势", "震荡", "弱势", "极端风险")
+    assert state["risk_level"] in ("低", "中", "高", "极高")
+    assert state["basis"] and state["invalidation"]
     ids = [source.id for source in result.sources]
     assert ids == [
         "market:index:20261026133500",
@@ -63,6 +67,7 @@ def test_market_tool_does_not_need_company() -> None:
         "market:sector:20261026133500",
         "market:limitup:2026-10-26",
         "market:news:20261026133500",
+        "market:state:20261026133500",
     ], ids
     assert "get_market_overview" in UNCACHED_TOOLS
 

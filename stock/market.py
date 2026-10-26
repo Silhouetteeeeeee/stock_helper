@@ -138,6 +138,16 @@ def trend_stats(rows: list[dict], price=None) -> dict | None:
     ma20 = ma(20)
     ma60 = ma(60)
     window = closes[-20:]
+    returns = [
+        current / previous - 1
+        for previous, current in zip(closes[-21:-1], closes[-20:])
+        if previous
+    ]
+    volatility = None
+    if len(returns) >= 10:
+        average = sum(returns) / len(returns)
+        variance = sum((item - average) ** 2 for item in returns) / (len(returns) - 1)
+        volatility = round(math.sqrt(variance) * math.sqrt(252) * 100, 2)
     return {
         "date": str(bars[-1].get("date") or ""),
         "close": round(last, 2),
@@ -155,6 +165,7 @@ def trend_stats(rows: list[dict], price=None) -> dict | None:
         "chg_20d_pct": change(20),
         "high_20d": round(max(window), 2),
         "low_20d": round(min(window), 2),
+        "volatility_20d_pct": volatility,
     }
 
 

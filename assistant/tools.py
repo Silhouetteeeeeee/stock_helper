@@ -38,6 +38,7 @@ from stock.research import build_research, build_research_notes
 from stock.management import PAGE_URL as MANAGEMENT_URL
 from stock.management import build_management
 from stock.market import build_market_overview
+from research.market_state import classify_market
 from stock.peers import build_peers
 from stock.segments import ensure_segments, segments_from_rows
 from stock.shareholders import PAGE_URL as SHAREHOLDER_URL
@@ -560,9 +561,10 @@ TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "get_market_overview",
             "description": (
-                "A股大盘全景：主要指数涨跌与成交额、涨跌家数与涨跌停、"
+                "A股大盘全景与市场状态分类：主要指数涨跌与成交额、涨跌家数与涨跌停、"
                 "两市成交额与量能、主要指数均线与区间表现、行业板块涨跌与净流入、"
-                "连板高度与涨停行业、财联社快讯。回答“今天大盘怎么看”“市场情绪如何”"
+                "连板高度与涨停行业、财联社快讯；data.state 给出强势/震荡/弱势/极端风险"
+                "分类、判断依据、风险等级与失效条件。回答“今天大盘怎么看”“市场情绪如何”"
                 "“有什么操作建议”时先调用；不需要公司参数"
             ),
             "parameters": {
@@ -826,6 +828,10 @@ def _market_sources(overview: dict) -> list[Source]:
         sources.append(Source(
             f"market:news:{stamp}", "市场快讯", "财联社", as_of, fetched,
         ))
+    if overview.get("state"):
+        sources.append(Source(
+            f"market:state:{stamp}", "市场状态", "规则计算", as_of, fetched,
+        ))
     return sources
 
 
@@ -844,11 +850,14 @@ def _market_overview_tool() -> ToolResult:
             for key, value in (overview.get("errors") or {}).items()
         )
         return ToolResult(ok=False, error=f"大盘数据获取失败：{detail or '没有可用数据'}")
+    # 状态判断是派生结果，和原始盘面放在同一份 data 里，模型不必再调一次
+    data = dict(overview)
+    data["state"] = classify_market(overview)
     return ToolResult(
         ok=True,
         as_of=overview.get("as_of"),
-        sources=tuple(_market_sources(overview)),
-        data=overview,
+        sources=tuple(_market_sources(data)),
+        data=data,
     )
 
 

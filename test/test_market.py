@@ -63,6 +63,8 @@ def test_trend_stats() -> None:
     assert stats["chg_20d_pct"] == 3.91, stats["chg_20d_pct"]
     assert stats["high_20d"] == 3569.0
     assert stats["low_20d"] == 3550.0
+    # 线性上涨的日收益率递减，20 日年化波动率接近 0
+    assert stats["volatility_20d_pct"] == 0.0, stats["volatility_20d_pct"]
     # 没有最新价时用最后一根日线收盘
     assert trend_stats(_bars())["price"] == 3569.0
     assert trend_stats([]) is None
