@@ -1,8 +1,8 @@
 """投资助手 Web 页面（Streamlit）。
 
 独立进程运行，由行情窗口的 AI 按钮启动。页面不跟随行情窗口：聊哪家公司
-只看对话里提到了谁。默认是一整栏；把顶部会话条里的历史对话长按拖到
-「右栏」，页面才分成左右两栏，各自独立对话。模型与工具复用 ``assistant``
+只看对话里提到了谁。默认是一整栏；把侧栏「最近对话」里的历史对话长按拖到
+页面右半屏，页面才分成左右两栏，各自独立对话。模型与工具复用 ``assistant``
 包，API key 只留在服务端，浏览器拿不到。
 
 启动：``python -m streamlit run assistant/webapp.py``
@@ -244,7 +244,7 @@ def _start_question(pane: dict, question: str) -> None:
 # 顶部会话条
 # ---------------------------------------------------------------------------
 def _bar_conversations() -> list[dict]:
-    """会话条只传需要的字段；搜索在组件里本地过滤，不打回 Streamlit。"""
+    """会话列表只传需要的字段；搜索在组件里本地过滤，不打回 Streamlit。"""
     return [
         {
             "id": item.id,
@@ -590,23 +590,10 @@ names = [
 heading = "投资助手" if not names else "投资助手 · " + " | ".join(names)
 st.title(heading)
 
-bar_value = conversation_bar(
-    conversations=_bar_conversations(),
-    panes=pane_ids(st.session_state.panes),
-    labels={
-        "left": left.get("name") or "",
-        "right": (right or {}).get("name") or "",
-    },
-    default=None,
-    key="conversation_bar",
-)
-if _apply_bar_value(bar_value):
-    st.rerun()
-
 with st.sidebar:
     if st.button("新对话", use_container_width=True):
         pane = new_pane()
-        pane["notice"] = "已开始新对话，之前的记录在顶部会话条里。"
+        pane["notice"] = "已开始新对话，之前的记录在下方会话列表里。"
         st.session_state.panes["left"] = pane
         st.rerun()
     left_id = left.get("conversation_id")
@@ -622,7 +609,21 @@ with st.sidebar:
     )
     st.divider()
     st.markdown("### 最近对话")
-    st.caption("在页面顶部：点击打开到左栏；长按拖到右栏可分屏。")
+    # 会话列表放在侧栏原位：点击打开到左栏，长按拖到页面右半屏分屏。
+    # 组件里拿得到页面文档，拖动时把左右投放区画在整页上。
+    bar_value = conversation_bar(
+        conversations=_bar_conversations(),
+        panes=pane_ids(st.session_state.panes),
+        labels={
+            "left": left.get("name") or "",
+            "right": (right or {}).get("name") or "",
+        },
+        default=None,
+        key="conversation_bar",
+    )
+
+if _apply_bar_value(bar_value):
+    st.rerun()
 
 if _is_split():
     left_col, right_col = st.columns(2, gap="large")
