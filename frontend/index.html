@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>投资助手</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<div id="app" class="app" v-cloak>
+  <aside class="side">
+    <div class="brand"><span class="logo">研</span><span>投资助手</span></div>
+    <button class="new-btn" @click="newConversation"><span class="plus">+</span>新对话</button>
+    <button class="del-btn" v-if="currentId !== null" @click="deleteCurrent">删除当前对话</button>
+
+    <div class="side-sec">
+      <div class="side-head"><span>最近对话</span><span class="count">{{ filteredConversations.length }}</span></div>
+      <input class="search" v-model="search" placeholder="搜索公司、代码或标题" autocomplete="off" />
+      <div class="recent">
+        <div class="side-empty" v-if="!conversations.length">还没有保存的对话</div>
+        <div class="side-empty" v-else-if="!filteredConversations.length">没有匹配的对话</div>
+        <button
+          v-for="item in filteredConversations"
+          :key="item.id"
+          class="recent-item"
+          :class="{ current: item.id === currentId }"
+          @click="openConversation(item.id)"
+        >
+          <span class="title">{{ item.title || item.name || `对话 ${item.id}` }}</span>
+          <span class="meta">{{ metaLine(item) }}</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="side-foot">
+      <p>回答里的 <span class="inline-cite">[n]</span> 对应来源角标，悬停看明细。</p>
+      <p>数据来自本地已入库的财报、公告、调研与行情。</p>
+      <p class="proto">原生原型 · Vue 3 · 8502</p>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="co" v-if="activeName">
+        <span class="co-dot"></span>
+        <span class="co-name">{{ activeName }}</span>
+        <span class="co-code" v-if="activeCode && /^\d{6}$/.test(activeCode)">{{ activeCode }}</span>
+      </div>
+      <div class="co muted" v-else>未选择公司 · 直接在下面提问</div>
+      <a class="top-link" href="http://127.0.0.1:8501" target="_blank" rel="noreferrer">Streamlit 版 ↗</a>
+    </header>
+
+    <div class="scroll" ref="scrollEl" @scroll.passive="hideTip">
+      <div class="col">
+        <div class="notice" v-if="notice">{{ notice }}</div>
+
+        <section class="empty" v-if="!messages.length && phase !== 'streaming'">
+          <h1>投资助手</h1>
+          <p class="lede">提到哪家公司就聊哪家。回答里的 <span class="inline-cite">[1]</span> 是来源角标，悬停可看类型、明细和数据日期；也可以直接问大盘。</p>
+          <div class="examples">
+            <button v-for="example in examples" :key="example" class="example" @click="useExample(example)">
+              <span>{{ example }}</span><span class="arrow">→</span>
+            </button>
+          </div>
+        </section>
+
+        <div class="messages" @mouseover="showTip" @mouseout="onTipOut">
+          <div
+            v-for="(message, index) in messages"
+            :key="index"
+            class="msg"
+            :class="[message.role === 'user' ? 'user' : 'assistant', { error: message.role === 'error', warning: message.warning }]"
+          >
+            <div class="who">
+              <span v-if="message.role !== 'user'" class="who-dot"></span>
+              <span>{{ message.role === 'user' ? '你' : '助手' }}</span>
+            </div>
+            <div class="bubble">
+              <template v-if="message.role === 'user' || message.role === 'error' || message.warning">
+                {{ message.text }}
+              </template>
+              <template v-else>
+                <div class="body" v-html="message.html || ''"></div>
+                <div class="sources" v-if="message.sources && message.sources.length">
+                  <div class="sources-title">来源</div>
+                  <div class="source-row" v-for="row in sourceRows(message)" :key="row.n">
+                    <span class="src-num">{{ row.n }}</span>
+                    <span class="src-label">{{ row.label }}</span>
+                    <span class="src-detail" v-if="row.detail">{{ row.detail }}</span>
+                    <span class="src-asof" v-if="row.asof">{{ row.asof }}</span>
+                    <a class="src-link" v-if="row.url" :href="row.url" target="_blank" rel="noreferrer" title="打开原文">↗</a>
+                  </div>
+                  <div class="src-note" v-if="message.sources.length > 6">另有 {{ message.sources.length - 6 }} 条来源</div>
+                </div>
+                <details class="trace" v-if="traceOf(message).count">
+                  <summary>研究过程 · {{ traceOf(message).count }} 次取数</summary>
+                  <div class="trace-row" v-for="(line, lineIndex) in traceOf(message).lines" :key="lineIndex">{{ line }}</div>
+                </details>
+                <div class="issue" v-for="(issue, issueIndex) in (message.issues || [])" :key="issueIndex">
+                  <span class="issue-mark">!</span><span>{{ issue }}</span>
+                </div>
+                <button class="copy" @click="copyMessage($event, index)">{{ copied === index ? '已复制' : '复制' }}</button>
+              </template>
+            </div>
+          </div>
+
+          <div class="msg assistant" v-if="phase === 'streaming'">
+            <div class="who"><span class="who-dot"></span><span>助手</span></div>
+            <div class="bubble">
+              <div class="body" v-if="streamText" v-html="streamHtml"></div>
+              <div class="thinking" v-else><span class="pulse"></span>{{ streamEmpty }}</div>
+              <div class="toolchip" v-if="statusLine">{{ statusLine }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer-wrap">
+      <div class="composer">
+        <div class="input-wrap">
+          <textarea
+            id="input"
+            ref="inputEl"
+            v-model="input"
+            rows="1"
+            :disabled="busy"
+            placeholder="问一句，如：紫金矿业靠什么赚钱？"
+            @input="grow"
+            @keydown="onKeydown"
+          ></textarea>
+        </div>
+        <button class="send" :disabled="busy || !input.trim()" @click="send" title="发送">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M8 13V3M8 3L3.5 7.5M8 3l4.5 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <div class="meter" v-if="usage" :style="meterStyle" :title="meterTitle"><span>{{ meterText }}</span></div>
+      </div>
+      <div class="composer-hint">
+        <span>Enter 发送 · Shift + Enter 换行</span>
+        <span v-if="usage">上下文 {{ formatTokens(usage.tokens) }} / {{ formatTokens(usage.budget_tokens) }}</span>
+      </div>
+    </div>
+  </main>
+
+  <div
+    class="tip"
+    v-if="tip"
+    ref="tipEl"
+    :style="{ left: tip.left + 'px', top: tip.top + 'px', opacity: tip.ready ? 1 : 0 }"
+    @mouseenter="cancelHide"
+    @mouseleave="scheduleHide"
+  >
+    <div class="tip-head">
+      <span class="tip-num">{{ tip.n }}</span>
+      <span class="tip-label">{{ tip.label }}</span>
+    </div>
+    <div class="tip-detail" v-if="tip.detail">{{ tip.detail }}</div>
+    <div class="tip-asof" v-if="tip.asof">数据日期 {{ tip.asof }}</div>
+    <a class="tip-url" v-if="tip.url" :href="tip.url" target="_blank" rel="noreferrer">打开原文 ↗</a>
+  </div>
+</div>
+
+<script src="/assets/vue.global.prod.js"></script>
+<script src="/assets/marked.umd.js"></script>
+<script src="/assets/purify.min.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
