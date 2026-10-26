@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    font-family: "Source Sans Pro", "Microsoft YaHei", system-ui, sans-serif;
+    color: #e6e9ef;
+    overflow: hidden;
+  }
+  .bar { display: flex; flex-direction: column; gap: 8px; padding: 2px 0 6px; }
+  .head { display: flex; align-items: center; gap: 10px; min-height: 34px; }
+  .search {
+    flex: 0 0 168px;
+    height: 30px;
+    padding: 0 10px;
+    border-radius: 8px;
+    border: 1px solid #394154;
+    background: #1b202b;
+    color: #e6e9ef;
+    font-size: 12px;
+    outline: none;
+  }
+  .search:focus { border-color: #4c8dff; }
+  .chips {
+    flex: 1 1 auto;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    padding-bottom: 2px;
+  }
+  .chip {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 220px;
+    padding: 5px 11px;
+    border-radius: 15px;
+    background: #262c3a;
+    border: 1px solid #394154;
+    font-size: 12.5px;
+    line-height: 1.2;
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: transform 0.08s, border-color 0.08s;
+  }
+  .chip.pressing { border-color: #4c8dff; transform: scale(1.04); }
+  .chip.dragging { opacity: 0.35; }
+  .chip .badge {
+    flex: 0 0 auto;
+    padding: 0 4px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 15px;
+    background: #394154;
+    color: #dce7ff;
+  }
+  .chip.left { border-color: #4c8dff; }
+  .chip.left .badge { background: #4c8dff; color: #fff; }
+  .chip.right { border-color: #e8a33d; }
+  .chip.right .badge { background: #e8a33d; color: #1b202b; }
+  .empty { font-size: 12px; opacity: 0.6; }
+  .hint { flex: 0 0 auto; font-size: 11.5px; opacity: 0.5; white-space: nowrap; }
+  /* 默认整栏：投放框只在长按拖动时出现，松手后收起 */
+  .slots { display: none; gap: 16px; }
+  .slots.visible { display: flex; }
+  .slot {
+    flex: 1;
+    height: 72px;
+    border: 1.5px dashed #3d465c;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-size: 12.5px;
+    color: #aab3c5;
+    padding: 0 12px;
+    transition: border-color 0.12s, background 0.12s, color 0.12s;
+  }
+  .slot span, .slot b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .slot.over { border-color: #4c8dff; background: rgba(76, 141, 255, 0.12); color: #dce7ff; }
+  .slot b { color: #f2f5fa; font-weight: 600; }
+  .ghost {
+    position: fixed;
+    z-index: 10;
+    padding: 5px 11px;
+    border-radius: 15px;
+    background: #4c8dff;
+    color: #fff;
+    font-size: 12.5px;
+    pointer-events: none;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+    transform: translate(-50%, -50%);
+  }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <div class="head">
+      <input class="search" id="search" placeholder="搜索对话" autocomplete="off" />
+      <div class="chips" id="chips"></div>
+      <span class="hint">点击打开 · 长按拖到右栏</span>
+    </div>
+    <div class="slots" id="slots">
+      <div class="slot" id="slot-left"></div>
+      <div class="slot" id="slot-right"></div>
+    </div>
+  </div>
+
+<script>
+const Streamlit = {
+  send(type, payload) {
+    window.parent.postMessage({ isStreamlitMessage: true, type, ...payload }, "*");
+  },
+  ready() {
+    this.send("streamlit:componentReady", { apiVersion: 1 });
+  },
+  setHeight(height) {
+    this.send("streamlit:setFrameHeight", { height });
+  },
+  setValue(value) {
+    this.send("streamlit:setComponentValue", { value });
+  },
+};
+
+const state = {
+  conversations: [],
+  panes: { left: null, right: null },
+  labels: { left: "", right: "" },
+};
+
+const searchEl = document.getElementById("search");
+const chipsBox = document.getElementById("chips");
+const slotsBox = document.getElementById("slots");
+const slotEls = {
+  left: document.getElementById("slot-left"),
+  right: document.getElementById("slot-right"),
+};
+
+let query = "";
+let press = null;   // { id, chip, timer, startX, startY, pointerId, moved }
+let drag = null;    // { id, ghost, chip }
+let hoverSide = null;
+
+function conversationById(id) {
+  return state.conversations.find((item) => Number(item.id) === Number(id)) || null;
+}
+
+function chipText(item) {
+  return item.title || item.name || `对话 ${item.id}`;
+}
+
+function renderChips() {
+  chipsBox.querySelectorAll(".chip, .empty").forEach((node) => node.remove());
+  const needle = query.toLowerCase();
+  const items = state.conversations.filter((item) => {
+    if (!needle) return true;
+    return [item.title, item.name, item.code]
+      .filter(Boolean)
+      .some((text) => String(text).toLowerCase().includes(needle));
+  });
+  if (!items.length) {
+    const empty = document.createElement("span");
+    empty.className = "empty";
+    empty.textContent = state.conversations.length ? "没有匹配的对话" : "还没有保存的对话";
+    chipsBox.appendChild(empty);
+    return;
+  }
+  items.forEach((item) => {
+    const chip = document.createElement("div");
+    chip.className = "chip";
+    const id = Number(item.id);
+    if (state.panes.left === id) {
+      chip.classList.add("left");
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = "左";
+      chip.appendChild(badge);
+    } else if (state.panes.right === id) {
+      chip.classList.add("right");
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = "右";
+      chip.appendChild(badge);
+    }
+    const label = document.createElement("span");
+    label.textContent = chipText(item);
+    chip.appendChild(label);
+    chip.dataset.id = String(id);
+    chip.addEventListener("pointerdown", onChipDown);
+    chipsBox.appendChild(chip);
+  });
+}
+
+function renderSlots() {
+  const left = state.labels.left || "当前会话";
+  const right = state.labels.right || "拖到这里分屏";
+  slotEls.left.innerHTML = "";
+  const leftLabel = document.createElement("span");
+  leftLabel.textContent = "左栏";
+  const leftValue = document.createElement("b");
+  leftValue.textContent = left;
+  slotEls.left.append(leftLabel, leftValue);
+
+  slotEls.right.innerHTML = "";
+  const rightLabel = document.createElement("span");
+  rightLabel.textContent = "右栏";
+  const rightValue = document.createElement("b");
+  rightValue.textContent = right;
+  slotEls.right.append(rightLabel, rightValue);
+}
+
+function render() {
+  renderChips();
+  renderSlots();
+  requestAnimationFrame(() => Streamlit.setHeight(document.body.scrollHeight));
+}
+
+function onChipDown(event) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  const chip = event.currentTarget;
+  press = {
+    id: Number(chip.dataset.id),
+    chip,
+    startX: event.clientX,
+    startY: event.clientY,
+    pointerId: event.pointerId,
+    moved: false,
+    timer: setTimeout(beginDrag, 250),
+  };
+  chip.classList.add("pressing");
+}
+
+function beginDrag() {
+  if (!press) return;
+  const { id, chip, startX, startY } = press;
+  clearTimeout(press.timer);
+  chip.classList.add("dragging");
+  const ghost = document.createElement("div");
+  ghost.className = "ghost";
+  const item = conversationById(id);
+  ghost.textContent = item ? chipText(item) : "对话";
+  ghost.style.left = `${startX}px`;
+  ghost.style.top = `${startY}px`;
+  document.body.appendChild(ghost);
+  drag = { id, ghost, chip };
+  // 只有拖动时才露出左右投放框，平时保持一整栏
+  slotsBox.classList.add("visible");
+  renderSlots();
+  requestAnimationFrame(() => Streamlit.setHeight(document.body.scrollHeight));
+  try {
+    chip.setPointerCapture(press.pointerId);
+  } catch (error) { /* 浏览器不支持时仍可靠 window 上的事件 */ }
+}
+
+function sideAt(x, y) {
+  for (const [side, node] of Object.entries(slotEls)) {
+    const rect = node.getBoundingClientRect();
+    if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+      return side;
+    }
+  }
+  return null;
+}
+
+function highlight(side) {
+  hoverSide = side;
+  Object.entries(slotEls).forEach(([key, node]) => {
+    node.classList.toggle("over", key === side);
+  });
+}
+
+function openConversation(id) {
+  Streamlit.setValue({ action: "open", id: Number(id), nonce: Date.now() });
+}
+
+function drop(side, id) {
+  const panes = { ...state.panes };
+  const other = side === "left" ? "right" : "left";
+  if (panes[side] === id) return; // 已经在这一栏
+  if (panes[other] === id) {
+    // 同一会话不能同时占两栏：右栏为空时，拖左栏当前会话过去不算数
+    if (side === "right" && panes[side] === null) return;
+    panes[other] = panes[side];
+  }
+  panes[side] = id;
+  state.panes = panes;
+  render();
+  // nonce 让 Streamlit 每次拖放都当成新值，触发页面刷新
+  Streamlit.setValue({ action: "assign", panes, nonce: Date.now() });
+}
+
+function endPress(event, commit) {
+  const pressed = press;
+  const grabbed = drag;
+  const side = grabbed
+    ? (commit ? sideAt(event.clientX, event.clientY) : hoverSide)
+    : null;
+
+  if (grabbed) {
+    grabbed.ghost.remove();
+    grabbed.chip.classList.remove("dragging");
+  }
+  if (pressed) {
+    clearTimeout(pressed.timer);
+    pressed.chip.classList.remove("pressing");
+  }
+  highlight(null);
+  slotsBox.classList.remove("visible");
+  press = null;
+  drag = null;
+  requestAnimationFrame(() => Streamlit.setHeight(document.body.scrollHeight));
+
+  if (!commit) return;
+  if (grabbed) {
+    if (side) drop(side, grabbed.id);
+  } else if (pressed && !pressed.moved) {
+    openConversation(pressed.id);
+  }
+}
+
+window.addEventListener("pointermove", (event) => {
+  if (drag) {
+    drag.ghost.style.left = `${event.clientX}px`;
+    drag.ghost.style.top = `${event.clientY}px`;
+    highlight(sideAt(event.clientX, event.clientY));
+    return;
+  }
+  if (press) {
+    const moved = Math.hypot(
+      event.clientX - press.startX,
+      event.clientY - press.startY
+    );
+    if (moved > 8) {
+      press.moved = true;
+      clearTimeout(press.timer);
+      press.chip.classList.remove("pressing");
+      press = null;
+    }
+  }
+});
+
+window.addEventListener("pointerup", (event) => endPress(event, true));
+window.addEventListener("pointercancel", (event) => endPress(event, false));
+
+searchEl.addEventListener("input", () => {
+  query = searchEl.value.trim();
+  renderChips();
+  requestAnimationFrame(() => Streamlit.setHeight(document.body.scrollHeight));
+});
+
+window.addEventListener("message", (event) => {
+  if (!event.data || event.data.type !== "streamlit:render") return;
+  const args = event.data.args || {};
+  state.conversations = Array.isArray(args.conversations) ? args.conversations : [];
+  state.panes = args.panes || { left: null, right: null };
+  state.labels = args.labels || { left: "", right: "" };
+  render();
+});
+
+window.addEventListener("resize", () => Streamlit.setHeight(document.body.scrollHeight));
+
+Streamlit.ready();
+render();
+</script>
+</body>
+</html>
