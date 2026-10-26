@@ -13,4 +13,3 @@ packages = ["stock", "market_widget", "common", "assistant", "research"]
 
 [tool.setuptools.package-data]
 market_widget = ["assets/*.svg"]
-assistant = ["conversation_bar/*.html"]

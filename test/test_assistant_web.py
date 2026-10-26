@@ -22,13 +22,6 @@ except ImportError:  # pragma: no cover - 没装 streamlit 时只跳过页面测
 
 from assistant import server
 from assistant.models import Source
-from assistant.panes import (
-    assign_panes,
-    new_pane,
-    open_in_left,
-    pane_ids,
-    sanitize_assignment,
-)
 from assistant.render import (
     citation_html,
     cite_text,
@@ -141,89 +134,8 @@ def test_context_meter_style() -> None:
     empty = context_meter_style({})
     assert 'content: "0%"' in empty and "#4c8dff 0.0%" in empty
 
-    # 双栏时环要限定在自己那一栏，两个输入框的数字不能互相覆盖
-    scoped = context_meter_style(
-        {"ratio": 0.42, "percent": 42.0, "level": "normal"},
-        container=".st-key-pane_left",
-    )
-    assert (
-        '.st-key-pane_left [data-testid="stChatInput"]::before' in scoped
-    ), scoped
-    assert '.st-key-pane_left [data-testid="stChatInput"]' in scoped
-
     # 流式过程中先隐藏内部 id，收尾时再换成角标
     assert stream_text("毛利率[[fin:1]]下降") == "毛利率下降"
-
-
-class _Conversation:
-    """测试用的会话记录，字段与 store.Conversation 对齐。"""
-
-    def __init__(self, conversation_id: int, code: str, name: str) -> None:
-        self.id = conversation_id
-        self.primary_code = code
-        self.primary_name = name
-        self.title = f"{name} · 问题{conversation_id}"
-
-
-def test_pane_assignments() -> None:
-    """会话条回传的栏位要能开右栏、关闭、对调，并挡住脏 id。"""
-    conversations = {
-        1: _Conversation(1, "605499", "东鹏饮料"),
-        2: _Conversation(2, "600519", "贵州茅台"),
-    }
-    history = {
-        1: [{"role": "user", "text": "东鹏"}],
-        2: [{"role": "user", "text": "茅台"}],
-    }
-
-    def messages_for(conversation_id: int) -> list[dict]:
-        return history[conversation_id]
-
-    # 未知 id 丢弃；同一段对话不能同时占两栏
-    assert sanitize_assignment({"left": 1, "right": 1}, {1, 2}) == {
-        "left": 1, "right": None,
-    }
-    assert sanitize_assignment({"left": 99, "right": "2"}, {1, 2}) == {
-        "left": None, "right": 2,
-    }
-    assert sanitize_assignment(None, {1}) == {"left": None, "right": None}
-    assert sanitize_assignment({"left": "", "right": "x"}, {1}) == {
-        "left": None, "right": None,
-    }
-
-    panes = {"left": new_pane(), "right": None}
-    assert pane_ids(panes) == {"left": None, "right": None}
-
-    # 默认一整栏；左栏是还没落库的新对话时，拖到右栏只开右栏，左栏不动
-    opened = assign_panes(
-        panes, {"left": None, "right": 2}, conversations, messages_for
-    )
-    assert opened["left"] is panes["left"], "左栏不该被重建"
-    assert opened["right"]["code"] == "600519"
-    assert opened["right"]["messages"] == history[2]
-    assert pane_ids(opened) == {"left": None, "right": 2}
-
-    # 关闭右栏，左栏保持原对象
-    closed = assign_panes(
-        opened, {"left": None, "right": None}, conversations, messages_for
-    )
-    assert closed["right"] is None
-    assert closed["left"] is opened["left"]
-
-    # 两栏对调：两边的 id 都变了，各自重新加载
-    swapped = assign_panes(
-        opened, {"left": 2, "right": 1}, conversations, messages_for
-    )
-    assert swapped["left"]["conversation_id"] == 2
-    assert swapped["right"]["conversation_id"] == 1
-    assert swapped["left"]["messages"] == history[2]
-    assert swapped["right"]["messages"] == history[1]
-
-    # 点击会话条打开到左栏；右栏正好是同一段时收掉右栏
-    clicked = open_in_left(opened, conversations[2], messages_for)
-    assert clicked["left"]["conversation_id"] == 2
-    assert clicked["right"] is None
-    assert clicked["left"]["notice"].startswith("已打开对话")
 
 
 def test_server_helpers() -> None:
@@ -334,23 +246,22 @@ def test_webapp_flow() -> None:
     # 行情窗口选了什么都不影响页面：没有对话时不指定公司
     write_selection("605499", "东鹏饮料")
     at.run()
-    assert at.session_state["panes"]["left"]["code"] is None
+    assert at.session_state["active_code"] is None
     assert [title.value for title in at.title] == ["投资助手"]
 
     # 模拟已经在聊东鹏，再注入假模型（首次运行之后的注入不会被切公司清掉）
-    pane = at.session_state["panes"]["left"]
-    pane["code"] = "605499"
-    pane["name"] = "东鹏饮料"
+    at.session_state["active_code"] = "605499"
+    at.session_state["active_name"] = "东鹏饮料"
     agent = _FakeAgent()
-    pane["agent"] = agent
-    pane["agent_code"] = "605499"
+    at.session_state["agent"] = agent
+    at.session_state["agent_code"] = "605499"
     at.chat_input[0].set_value("毛利率为什么下滑").run()
     assert not at.exception, list(at.exception)
     assert agent.asked == ["毛利率为什么下滑"], agent.asked
     # 标题就写明在聊哪家公司，正文不再另起一行“当前：…”
     assert [title.value for title in at.title] == ["投资助手 · 东鹏饮料"]
 
-    messages = at.session_state["panes"]["left"]["messages"]
+    messages = at.session_state["messages"]
     assert [message["role"] for message in messages] == ["user", "assistant"]
     assert messages[1]["trace"][0]["name"] == "get_finance"
 
@@ -394,8 +305,8 @@ def test_webapp_flow() -> None:
     # 新对话只清空当前会话，记录留在最近列表
     _button(at, "新对话").click().run()
     assert not at.exception, list(at.exception)
-    assert at.session_state["panes"]["left"]["messages"] == []
-    assert at.session_state["panes"]["left"]["conversation_id"] is None
+    assert at.session_state["messages"] == []
+    assert at.session_state["conversation_id"] is None
     assert any("新对话" in item.value for item in at.info)
     assert len(store.recent(primary_code="605499")) == 1
 
@@ -424,22 +335,16 @@ def test_webapp_resume_and_delete() -> None:
     at = _app()
     at.run()
     assert not at.exception, list(at.exception)
-    assert at.session_state["panes"]["left"]["messages"] == []
+    assert at.session_state["messages"] == []
 
-    # 点击顶部会话条（组件）等价于 open_in_left；这里直接套用同样状态，验证恢复渲染
-    item = next(row for row in store.recent(limit=50) if row.id == conversation_id)
-    at.session_state["panes"] = open_in_left(
-        at.session_state["panes"], item, store.messages
-    )
-    at.run()
+    # 最近列表在左侧，点标题即可恢复这段对话
+    _button(at, "贵州茅台 · 渠道怎么样").click().run()
     assert not at.exception, list(at.exception)
-    assert (
-        at.session_state["panes"]["left"]["conversation_id"] == conversation_id
-    )
-    assert [
-        message["role"]
-        for message in at.session_state["panes"]["left"]["messages"]
-    ] == ["user", "assistant"]
+    assert at.session_state["conversation_id"] == conversation_id
+    assert [message["role"] for message in at.session_state["messages"]] == [
+        "user",
+        "assistant",
+    ]
     markdown = "\n".join(item.value for item in at.markdown)
     assert (
         '直营占比提升 <sup class="cite" data-tip="财报 · 东财 · 2026-06-30">[1]</sup>'
@@ -447,14 +352,13 @@ def test_webapp_resume_and_delete() -> None:
     ), markdown
     # 旧数据只存了次数，不能因此报错
     assert any("研究过程：2 次取数" in item.value for item in at.caption)
-    # 另一家公司的对话也还在库里，切走不会消失
-    assert any(row.id == other_id for row in store.recent(limit=50))
-    # 单栏时没有“关闭右栏”
-    assert "关闭" not in [button.label for button in at.button]
+    # 当前聊茅台，紫金的对话仍在左侧
+    labels = [button.label for button in at.button]
+    assert any(label.startswith("紫金矿业 · 分红怎么样") for label in labels), labels
 
     _button(at, "删除当前对话").click().run()
     assert not at.exception, list(at.exception)
-    assert at.session_state["panes"]["left"]["messages"] == []
+    assert at.session_state["messages"] == []
     assert store.messages(conversation_id) == []
     assert any("已删除" in item.value for item in at.info)
 
@@ -471,7 +375,7 @@ def test_webapp_mentions_company() -> None:
     at.run()
     assert not at.exception, list(at.exception)
     # 还没聊公司：标题不带公司
-    assert at.session_state["panes"]["left"]["code"] is None
+    assert at.session_state["active_code"] is None
     assert [title.value for title in at.title] == ["投资助手"]
     assert any("带上公司名或代码" in item.value for item in at.info)
     assert not any(item.value.startswith("当前：") for item in at.caption)
@@ -479,7 +383,7 @@ def test_webapp_mentions_company() -> None:
     # 没提公司就提问：提示补上公司，不调用模型
     at.chat_input[0].set_value("毛利率为什么下滑？").run()
     assert not at.exception, list(at.exception)
-    assert at.session_state["panes"]["left"]["code"] is None
+    assert at.session_state["active_code"] is None
     assert any("没认出你问的是哪家公司" in item.value for item in at.warning)
 
     def _offline_client():
@@ -491,8 +395,8 @@ def test_webapp_mentions_company() -> None:
         at.chat_input[0].set_value("东鹏饮料毛利率为什么下滑").run()
         assert not at.exception, list(at.exception)
         # 这一句里提到的公司就是本轮聊的公司，标题随之更新
-        assert at.session_state["panes"]["left"]["code"] == "605499"
-        assert at.session_state["panes"]["left"]["name"] == "东鹏饮料"
+        assert at.session_state["active_code"] == "605499"
+        assert at.session_state["active_name"] == "东鹏饮料"
         assert [title.value for title in at.title] == ["投资助手 · 东鹏饮料"]
         assert any("助手不可用" in item.value for item in at.error)
         # 标题下面只有一条引导，不再有“当前：…”那行
@@ -501,7 +405,7 @@ def test_webapp_mentions_company() -> None:
         # “它的行业轮动”回指的是东鹏，留在这段公司会话里，不被关键词带去大盘
         at.chat_input[0].set_value("它的行业轮动怎么样").run()
         assert not at.exception, list(at.exception)
-        assert at.session_state["panes"]["left"]["code"] == "605499"
+        assert at.session_state["active_code"] == "605499"
         assert [title.value for title in at.title] == ["投资助手 · 东鹏饮料"]
 
         # 没有指代的大盘问题仍然另开一段大盘会话
@@ -509,7 +413,7 @@ def test_webapp_mentions_company() -> None:
 
         at.chat_input[0].set_value("今天大盘怎么看").run()
         assert not at.exception, list(at.exception)
-        assert at.session_state["panes"]["left"]["code"] == MARKET_CODE
+        assert at.session_state["active_code"] == MARKET_CODE
         assert [title.value for title in at.title] == ["投资助手 · 大盘"]
     finally:
         agent_module.build_client = original
@@ -537,8 +441,8 @@ def test_webapp_market_question() -> None:
         at.chat_input[0].set_value("今天大盘怎么看 有什么操作建议").run()
         assert not at.exception, list(at.exception)
         # 没提公司也能提问：路由到大盘，而不是被“请补公司”拦住
-        assert at.session_state["panes"]["left"]["code"] == MARKET_CODE
-        assert at.session_state["panes"]["left"]["name"] == MARKET_NAME
+        assert at.session_state["active_code"] == MARKET_CODE
+        assert at.session_state["active_name"] == MARKET_NAME
         assert [title.value for title in at.title] == ["投资助手 · 大盘"]
         assert not any("没认出你问的是哪家公司" in item.value for item in at.warning)
         assert any("助手不可用" in item.value for item in at.error)
@@ -553,88 +457,6 @@ def test_webapp_market_question() -> None:
     assert [message["role"] for message in store.messages(saved[0].id)] == [
         "user", "error",
     ]
-
-
-def test_webapp_split_pane() -> None:
-    """拖到右栏后两栏各自独立：右栏换公司不碰左栏，占用环各算各的。"""
-    if AppTest is None:
-        return
-    _clear_store()
-
-    store = ConversationStore()
-    left_id = store.create(build_title("东鹏饮料", "毛利率"), "605499", "东鹏饮料")
-    store.append(left_id, "user", {"text": "毛利率"})
-    right_id = store.create(build_title("贵州茅台", "渠道"), "600519", "贵州茅台")
-    store.append(right_id, "user", {"text": "渠道"})
-
-    at = _app()
-    at.run()
-    assert not at.exception, list(at.exception)
-
-    known = {item.id: item for item in store.recent(limit=50)}
-    at.session_state["panes"] = assign_panes(
-        at.session_state["panes"],
-        {"left": left_id, "right": right_id},
-        known,
-        store.messages,
-    )
-    panes = at.session_state["panes"]
-    panes["left"]["agent"] = _FakeAgent()
-    panes["left"]["agent_code"] = "605499"
-    panes["right"]["agent"] = _FakeAgent()
-    panes["right"]["agent_code"] = "600519"
-
-    at.run()
-    assert not at.exception, list(at.exception)
-    # 分成两栏后各有一个输入框，标题同时写两边的公司
-    assert len(at.chat_input) == 2, len(at.chat_input)
-    assert [title.value for title in at.title] == [
-        "投资助手 · 东鹏饮料 | 贵州茅台"
-    ]
-    markdown = [item.value for item in at.markdown]
-    assert "**左栏 · 东鹏饮料**" in markdown, markdown
-    assert "**右栏 · 贵州茅台**" in markdown, markdown
-    # 两个占用环分别限定在自己的栏内，不会互相覆盖
-    meters = [
-        item.value for item in at.markdown
-        if '[data-testid="stChatInput"]' in item.value
-    ]
-    assert len(meters) == 2, meters
-    assert any(".st-key-pane_left " in meter for meter in meters), meters
-    assert any(".st-key-pane_right " in meter for meter in meters), meters
-
-    # 在右栏提问：右栏切到大盘，左栏东鹏原样保留
-    from assistant import agent as agent_module
-    from assistant.tools import MARKET_CODE
-
-    def _offline_client():
-        raise RuntimeError("测试环境不调用模型")
-
-    original = agent_module.build_client
-    agent_module.build_client = _offline_client
-    try:
-        at.chat_input[1].set_value("今天大盘怎么看").run()
-        assert not at.exception, list(at.exception)
-    finally:
-        agent_module.build_client = original
-
-    panes = at.session_state["panes"]
-    assert panes["left"]["code"] == "605499"
-    assert [message["role"] for message in panes["left"]["messages"]] == ["user"]
-    assert panes["right"]["code"] == MARKET_CODE
-    assert [message["role"] for message in panes["right"]["messages"]] == [
-        "user", "error",
-    ]
-    titles = [title.value for title in at.title]
-    assert titles == ["投资助手 · 东鹏饮料 | 大盘"], titles
-    assert "**右栏 · 大盘**" in [item.value for item in at.markdown]
-    # 右栏的助手初始化失败，环被清掉；左栏的还在
-    meters = [
-        item.value for item in at.markdown
-        if '[data-testid="stChatInput"]' in item.value
-    ]
-    assert len(meters) == 1, meters
-    assert ".st-key-pane_left " in meters[0], meters
 
 
 def test_kill_on_close_job() -> None:
@@ -672,9 +494,7 @@ def main() -> None:
     test_webapp_resume_and_delete()
     test_webapp_mentions_company()
     test_webapp_market_question()
-    test_webapp_split_pane()
     test_context_meter_style()
-    test_pane_assignments()
     print("PASS")
     sys.stdout.flush()
     os._exit(0)

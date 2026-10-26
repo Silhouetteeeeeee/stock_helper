@@ -124,15 +124,12 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
-def context_meter_style(usage: dict, container: str = "") -> str:
+def context_meter_style(usage: dict) -> str:
     """把 ``ResearchAgent.context_usage()`` 的结果画成发送按钮旁的小圆环。
 
     只输出一段 ``<style>``：圆环与百分比都是聊天输入框容器的伪元素，
     窗口缩放、按钮换位时都跟着输入框走，不用计算列宽。比例以压缩阈值
     （软预算）为分母，超过 100% 时环画满、数字如实显示。
-
-    双栏时左右各有一个输入框，用 ``container``（如 ``.st-key-pane_left``）
-    把样式限定在自己那一栏，两个环才不会互相覆盖。
     """
     usage = usage or {}
     ratio = _clamp(float(usage.get("ratio") or 0.0), 0.0, 1.0)
@@ -142,8 +139,7 @@ def context_meter_style(usage: dict, container: str = "") -> str:
     percent_text = f"{percent:.0f}%" if percent < 1000 else "999%+"
     filled = round(ratio * 100, 1)
     size = METER_SIZE
-    base = '[data-testid="stChatInput"]'
-    selector = f"{container.strip()} {base}" if container.strip() else base
+    selector = '[data-testid="stChatInput"]'
     box = (
         "position: absolute; top: 50%;"
         f"width: {size}px; height: {size}px;"
