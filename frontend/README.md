@@ -5,7 +5,9 @@
 
 - `index.html`：页面结构
 - `styles.css`：样式
-- `app.js`：会话列表、SSE 流式回答、引用角标与悬停卡
+- `app.js`：`<chat-pane>` 对话栏（会话、SSE 流式回答、引用角标与悬停卡）+ 页面外壳
+  （侧栏、拖动/按钮开分屏、分隔条调宽）。左右两栏各自持有状态和滚动区，
+  互不撑高、互不影响
 - `assets/`：第三方库，本地自带，不走 CDN
 
 第三方库版本：Vue 3.5.44（MIT）、marked 18.1.1（MIT）、DOMPurify 3.4.17（Apache-2.0 OR MPL-2.0）。

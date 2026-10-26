@@ -10,8 +10,7 @@
 <div id="app" class="app" v-cloak>
   <aside class="side">
     <div class="brand"><span class="logo">研</span><span>投资助手</span></div>
-    <button class="new-btn" @click="newConversation"><span class="plus">+</span>新对话</button>
-    <button class="del-btn" v-if="currentId !== null" @click="deleteCurrent">删除当前对话</button>
+    <button class="new-btn" @click="newChat"><span class="plus">+</span>新对话</button>
 
     <div class="side-sec">
       <div class="side-head"><span>最近对话</span><span class="count">{{ filteredConversations.length }}</span></div>
@@ -19,35 +18,70 @@
       <div class="recent">
         <div class="side-empty" v-if="!conversations.length">还没有保存的对话</div>
         <div class="side-empty" v-else-if="!filteredConversations.length">没有匹配的对话</div>
-        <button
+        <div
           v-for="item in filteredConversations"
           :key="item.id"
           class="recent-item"
-          :class="{ current: item.id === currentId }"
-          @click="openConversation(item.id)"
+          :class="{ current: item.id === leftCid, split: item.id === rightCid }"
+          draggable="true"
+          tabindex="0"
+          @click="openLeft(item.id)"
+          @keydown.enter="openLeft(item.id)"
+          @dragstart="onDragStart($event, item)"
+          @dragend="onDragEnd"
         >
           <span class="title">{{ item.title || item.name || `对话 ${item.id}` }}</span>
           <span class="meta">{{ metaLine(item) }}</span>
-        </button>
+          <button class="split-btn" title="在右侧分屏打开" @click.stop="openInRight(item.id)">分屏</button>
+        </div>
       </div>
     </div>
 
     <div class="side-foot">
       <p>回答里的 <span class="inline-cite">[n]</span> 对应来源角标，悬停看明细。</p>
-      <p>数据来自本地已入库的财报、公告、调研与行情。</p>
-      <p class="proto">原生原型 · Vue 3 · 8502</p>
+      <p>拖动最近对话到右侧，或点「分屏」，两边各自滚动、互不影响。</p>
+      <p class="proto"><a href="http://127.0.0.1:8501" target="_blank" rel="noreferrer">Streamlit 版</a> · Vue 3 · 8502</p>
     </div>
   </aside>
 
-  <main class="main">
-    <header class="topbar">
+  <main class="main" @dragover.prevent @drop.prevent="onDrop">
+    <div class="panes" ref="panes">
+      <chat-pane
+        ref="leftPane"
+        :style="leftStyle"
+        @state="onLeftState"
+        @changed="refresh"
+      ></chat-pane>
+      <div class="divider" v-if="splitOpen" :class="{ active: resizing }" @mousedown="startResize"></div>
+      <chat-pane
+        v-if="splitOpen"
+        ref="rightPane"
+        secondary
+        :style="rightStyle"
+        @state="onRightState"
+        @changed="refresh"
+        @close="closeSplit"
+      ></chat-pane>
+    </div>
+    <div class="drop-hint" v-if="dragging">
+      <div class="drop-card">松开 → 在右侧打开这段对话</div>
+    </div>
+  </main>
+</div>
+
+<template id="pane-template">
+  <section class="pane" :class="{ secondary: secondary, single: !secondary }">
+    <header class="pane-head">
       <div class="co" v-if="activeName">
         <span class="co-dot"></span>
         <span class="co-name">{{ activeName }}</span>
         <span class="co-code" v-if="activeCode && /^\d{6}$/.test(activeCode)">{{ activeCode }}</span>
       </div>
-      <div class="co muted" v-else>未选择公司 · 直接在下面提问</div>
-      <a class="top-link" href="http://127.0.0.1:8501" target="_blank" rel="noreferrer">Streamlit 版 ↗</a>
+      <div class="co muted" v-else>{{ secondary ? '分屏 · 未选择对话' : '未选择公司 · 直接在下面提问' }}</div>
+      <div class="pane-tools">
+        <button class="icon-btn" v-if="cid !== null" @click="deleteConversation" title="删除这个对话">删除</button>
+        <button class="icon-btn close" v-if="secondary" @click="$emit('close')" title="关闭分屏">✕</button>
+      </div>
     </header>
 
     <div class="scroll" ref="scrollEl" @scroll.passive="hideTip">
@@ -55,8 +89,9 @@
         <div class="notice" v-if="notice">{{ notice }}</div>
 
         <section class="empty" v-if="!messages.length && phase !== 'streaming'">
-          <h1>投资助手</h1>
-          <p class="lede">提到哪家公司就聊哪家。回答里的 <span class="inline-cite">[1]</span> 是来源角标，悬停可看类型、明细和数据日期；也可以直接问大盘。</p>
+          <h1>{{ secondary ? '分屏对话' : '投资助手' }}</h1>
+          <p class="lede" v-if="secondary">直接在下面提问，会在这里开一段新对话；也可以从左边拖一个最近对话过来。两边各自滚动、各自提问，互不影响。</p>
+          <p class="lede" v-else>提到哪家公司就聊哪家。回答里的 <span class="inline-cite">[1]</span> 是来源角标，悬停可看类型、明细和数据日期；也可以直接问大盘。</p>
           <div class="examples">
             <button v-for="example in examples" :key="example" class="example" @click="useExample(example)">
               <span>{{ example }}</span><span class="arrow">→</span>
@@ -120,7 +155,7 @@
       <div class="composer">
         <div class="input-wrap">
           <textarea
-            id="input"
+            class="composer-input"
             ref="inputEl"
             v-model="input"
             rows="1"
@@ -142,25 +177,25 @@
         <span v-if="usage">上下文 {{ formatTokens(usage.tokens) }} / {{ formatTokens(usage.budget_tokens) }}</span>
       </div>
     </div>
-  </main>
 
-  <div
-    class="tip"
-    v-if="tip"
-    ref="tipEl"
-    :style="{ left: tip.left + 'px', top: tip.top + 'px', opacity: tip.ready ? 1 : 0 }"
-    @mouseenter="cancelHide"
-    @mouseleave="scheduleHide"
-  >
-    <div class="tip-head">
-      <span class="tip-num">{{ tip.n }}</span>
-      <span class="tip-label">{{ tip.label }}</span>
+    <div
+      class="tip"
+      v-if="tip"
+      ref="tipEl"
+      :style="{ left: tip.left + 'px', top: tip.top + 'px', opacity: tip.ready ? 1 : 0 }"
+      @mouseenter="cancelHide"
+      @mouseleave="scheduleHide"
+    >
+      <div class="tip-head">
+        <span class="tip-num">{{ tip.n }}</span>
+        <span class="tip-label">{{ tip.label }}</span>
+      </div>
+      <div class="tip-detail" v-if="tip.detail">{{ tip.detail }}</div>
+      <div class="tip-asof" v-if="tip.asof">数据日期 {{ tip.asof }}</div>
+      <a class="tip-url" v-if="tip.url" :href="tip.url" target="_blank" rel="noreferrer">打开原文 ↗</a>
     </div>
-    <div class="tip-detail" v-if="tip.detail">{{ tip.detail }}</div>
-    <div class="tip-asof" v-if="tip.asof">数据日期 {{ tip.asof }}</div>
-    <a class="tip-url" v-if="tip.url" :href="tip.url" target="_blank" rel="noreferrer">打开原文 ↗</a>
-  </div>
-</div>
+  </section>
+</template>
 
 <script src="/assets/vue.global.prod.js"></script>
 <script src="/assets/marked.umd.js"></script>
