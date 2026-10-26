@@ -104,8 +104,12 @@ def test_context_meter_style() -> None:
         "tokens": 23100, "budget_tokens": 55000, "hard_tokens": 80000,
         "percent": 42.0, "ratio": 0.42, "level": "normal",
     })
-    # 环和百分比都挂在聊天输入框上，位置跟着发送按钮走
+    # 环和百分比都挂在聊天输入框上，落在发送按钮右侧，窄屏才退回框内
     assert '[data-testid="stChatInput"]' in normal
+    assert "right: -2.4rem" in normal, normal
+    assert "right: 4.9rem" in normal, normal
+    assert "width: 36px" in normal and "font-size: 11px" in normal
+    assert '@media (max-width: 1024px)' in normal
     assert 'content: "42%"' in normal, normal
     assert "#4c8dff 42.0%" in normal, normal
     assert "conic-gradient" in normal and "mask: radial-gradient" in normal

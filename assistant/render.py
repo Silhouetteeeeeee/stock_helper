@@ -12,10 +12,13 @@ import re
 CITATION_PATTERN = re.compile(r"\[\[([^\[\]]+)\]\]")
 MAX_SOURCE_LINES = 6
 
-# 上下文占用环：贴在聊天输入框发送按钮左侧的小圆环，颜色按档位切换
-# 输入框右侧留白 1.5rem + 发送按钮约 2.5rem + 一点间距，环就贴在按钮左边
-METER_RIGHT = "4.3rem"
-METER_SIZE = 22
+# 上下文占用环：挂在聊天输入框右侧、发送按钮之外的小圆环，颜色按档位切换
+# 负偏移让环落在输入框外沿右边；窗口过窄时退回框内、按钮左侧，避免被裁掉
+METER_RIGHT = "-2.4rem"
+METER_NARROW_RIGHT = "4.9rem"
+METER_SIZE = 36
+METER_FONT = 11
+METER_THICKNESS = 4
 USAGE_COLORS = {"normal": "#4c8dff", "warn": "#e8a33d", "over": "#e5534b"}
 
 
@@ -137,29 +140,37 @@ def context_meter_style(usage: dict) -> str:
     filled = round(ratio * 100, 1)
     size = METER_SIZE
     selector = '[data-testid="stChatInput"]'
+    box = (
+        "position: absolute; top: 50%;"
+        f"width: {size}px; height: {size}px;"
+        f"margin-top: -{size / 2}px; border-radius: 50%;"
+        "pointer-events: none;"
+    )
     return (
         "<style>"
         f"{selector} {{ position: relative !important; }}"
+        f"{selector}::before, {selector}::after {{ {box} right: {METER_RIGHT}; }}"
+        # 窗口变窄时输入框外没有空位，环退回框内、发送按钮左侧
+        "@media (max-width: 1024px) {"
         f"{selector}::before, {selector}::after {{"
-        "position: absolute; top: 50%;"
-        f"right: {METER_RIGHT}; width: {size}px; height: {size}px;"
-        f"margin-top: -{size / 2}px; border-radius: 50%;"
-        "pointer-events: none;"
-        "}"
+        f"right: {METER_NARROW_RIGHT}; }} }}"
         # 圆环画在 ::before，百分比文字画在 ::after，压住输入框自身的层
         f"{selector}::before {{"
         'content: ""; z-index: 5;'
         f"background: conic-gradient({color} {filled}%, "
         "rgba(127, 127, 127, 0.28) 0);"
         "-webkit-mask: radial-gradient(farthest-side, transparent "
-        "calc(100% - 3.5px), #000 calc(100% - 3px));"
+        f"calc(100% - {METER_THICKNESS + 0.5}px), #000 "
+        f"calc(100% - {METER_THICKNESS}px));"
         "mask: radial-gradient(farthest-side, transparent "
-        "calc(100% - 3.5px), #000 calc(100% - 3px));"
+        f"calc(100% - {METER_THICKNESS + 0.5}px), #000 "
+        f"calc(100% - {METER_THICKNESS}px));"
         "}"
         f"{selector}::after {{"
         f'content: "{percent_text}"; z-index: 6;'
         "display: flex; align-items: center; justify-content: center;"
-        f"font-size: 8px; font-weight: 600; line-height: 1; color: {color};"
+        f"font-size: {METER_FONT}px; font-weight: 600; line-height: 1;"
+        f"color: {color};"
         "}"
         "</style>"
     )
