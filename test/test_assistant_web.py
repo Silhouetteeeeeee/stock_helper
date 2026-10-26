@@ -343,10 +343,37 @@ def test_webapp_mentions_company() -> None:
         agent_module.build_client = original
 
 
+def test_kill_on_close_job() -> None:
+    """父进程被强杀（IDE 终止）时，Windows 也要把服务子进程一起带走。"""
+    if os.name != "nt":
+        return
+    import ctypes
+    import subprocess
+
+    job = server._kill_on_close_job()
+    assert job, "创建 Job Object 失败"
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        assert server._assign_to_job(job, child.pid), "把子进程放进 Job 失败"
+        # 关闭句柄等价于父进程退出：kill-on-close 会立刻结束子进程
+        ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(job))
+        assert child.wait(timeout=15) is not None
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=5)
+
+
 def main() -> None:
     test_selection_roundtrip()
     test_render_citations()
     test_server_helpers()
+    test_kill_on_close_job()
     test_webapp_flow()
     test_webapp_resume_and_delete()
     test_webapp_mentions_company()

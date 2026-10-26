@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 import signal
 import sys
 from datetime import datetime, time
@@ -264,12 +265,15 @@ class DemoFeed(QObject):
 
 
 def main() -> int:
+    from assistant import server as assistant_server
     from assistant.env import load_env
 
     load_env()   # 从项目根的 .env 读配置（雪球 token 等）
     app = QApplication.instance() or QApplication(sys.argv)
     # Qt 在 Windows 上会吞掉 Ctrl+C，这里恢复默认的 SIGINT 行为让其正常退出。
     signal.signal(signal.SIGINT, signal.SIG_DFL)
+    # 不管从哪条路径退出（关窗口、Ctrl+C、app.quit），都停掉 Web 服务
+    app.aboutToQuit.connect(assistant_server.stop_server)
 
     window = MarketWidget()
     window.show()
@@ -281,7 +285,12 @@ def main() -> int:
     window.financials_updated.connect(feed.invalidate_briefing)
     feed.start()
     feed.publish()
-    return app.exec()
+    code = app.exec()
+    assistant_server.stop_server()
+    # 后台线程可能还卡在网络请求里，解释器退出会一直等它；这里直接结束进程
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
 
 
 if __name__ == "__main__":

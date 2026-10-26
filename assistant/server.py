@@ -30,6 +30,99 @@ _process: subprocess.Popen | None = None
 _port: int | None = None
 _owned = False                  # 服务是不是本进程启动的
 _log = None
+_job = None                     # Windows Job Object，父进程一死就带走子进程
+
+
+# ---------------------------------------------------------------------------
+# 父子进程绑定：Windows 上终止进程不会自动杀掉子进程，IDE 强杀时 atexit
+# 根本不会执行，Streamlit 就会变成孤儿占着端口。把一个「句柄关闭即杀光
+# 进程」的 Job Object 挂在子进程上，父进程无论怎么死，系统都会清理它。
+# ---------------------------------------------------------------------------
+def _kill_on_close_job():
+    """创建 kill-on-close 的 Job Object；非 Windows 或失败时返回 None。"""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        class _IoCounters(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_ulonglong),
+                ("WriteOperationCount", ctypes.c_ulonglong),
+                ("OtherOperationCount", ctypes.c_ulonglong),
+                ("ReadTransferCount", ctypes.c_ulonglong),
+                ("WriteTransferCount", ctypes.c_ulonglong),
+                ("OtherTransferCount", ctypes.c_ulonglong),
+            ]
+
+        class _BasicLimits(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", ctypes.c_uint32),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", ctypes.c_uint32),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", ctypes.c_uint32),
+                ("SchedulingClass", ctypes.c_uint32),
+            ]
+
+        class _ExtendedLimits(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _BasicLimits),
+                ("IoInfo", _IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+        kernel32.CreateJobObjectW.argtypes = (ctypes.c_void_p, ctypes.c_wchar_p)
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+
+        info = _ExtendedLimits()
+        # 0x2000 = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        info.BasicLimitInformation.LimitFlags = 0x2000
+        # 9 = JobObjectExtendedLimitInformation
+        if not kernel32.SetInformationJobObject(
+            ctypes.c_void_p(job), 9, ctypes.byref(info), ctypes.sizeof(info)
+        ):
+            kernel32.CloseHandle(ctypes.c_void_p(job))
+            return None
+        return job
+    except Exception:  # noqa: BLE001 - 取不到就用原来的显式停止兜底
+        return None
+
+
+def _assign_to_job(job, pid: int) -> bool:
+    """把子进程放进 Job Object；失败返回 False，不影响服务本身。"""
+    if job is None or os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+        # PROCESS_ALL_ACCESS
+        handle = kernel32.OpenProcess(0x1F0FFF, 0, int(pid))
+        if not handle:
+            return False
+        try:
+            return bool(
+                kernel32.AssignProcessToJobObject(
+                    ctypes.c_void_p(job), ctypes.c_void_p(handle)
+                )
+            )
+        finally:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def url_for(port: int) -> str:
@@ -104,7 +197,7 @@ def _stop_process(proc: subprocess.Popen) -> None:
 
 def start_server(port: int) -> str:
     """起一个 Streamlit 子进程并等到健康检查通过。"""
-    global _process, _port, _owned, _log
+    global _process, _port, _owned, _log, _job
     if importlib.util.find_spec("streamlit") is None:
         raise RuntimeError("未安装 Streamlit，请先执行：pip install streamlit")
 
@@ -127,6 +220,10 @@ def start_server(port: int) -> str:
 
     _port = port
     _owned = True
+    # 挂到 Job Object 上：主进程被 IDE 强杀时，Windows 也会结束这个子进程
+    if _job is None:
+        _job = _kill_on_close_job()
+    _assign_to_job(_job, _process.pid)
     deadline = time.monotonic() + START_TIMEOUT
     while time.monotonic() < deadline:
         if is_healthy(port):
