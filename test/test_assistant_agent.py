@@ -319,6 +319,8 @@ def test_prompt_is_skill_based() -> None:
     # 大盘问题也走 skill + 工具，不在提示词里放具体判据
     assert "market_view" in SYSTEM_PROMPT
     assert "get_market_overview" in SYSTEM_PROMPT
+    assert "news_events" in SYSTEM_PROMPT
+    assert "get_news_events" in SYSTEM_PROMPT
     # 具体判据必须只在 skill 里，不能回到系统提示词
     for phrase in ("第一问", "第二问", "护城河", "三句话", "品牌", "可证伪"):
         assert phrase not in SYSTEM_PROMPT, phrase

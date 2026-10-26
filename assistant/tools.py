@@ -39,6 +39,7 @@ from stock.management import PAGE_URL as MANAGEMENT_URL
 from stock.management import build_management
 from stock.market import build_market_overview
 from research.market_state import classify_market
+from research.news_events import build_news_events
 from stock.peers import build_peers
 from stock.segments import ensure_segments, segments_from_rows
 from stock.shareholders import PAGE_URL as SHAREHOLDER_URL
@@ -574,6 +575,30 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_news_events",
+            "description": (
+                "当日政策、产业、公司与海外市场事件：分类、来源、发布时间、"
+                "可能影响的行业、传导路径、可信度与不确定性；另含美股与港股指数表现。"
+                "回答“今天有什么新闻/政策”“对哪些行业有影响”“海外市场怎么样”时调用；"
+                "不需要公司参数。涉及具体公司公告时再用 get_announcements 核实原文"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "description": "返回事件条数，默认 12",
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 
@@ -668,7 +693,9 @@ _MARKET_WORDS = (
     "两市", "A股", "a股", "市场", "行情", "板块", "涨停", "跌停",
     "成交量", "成交额", "仓位", "操作建议", "北向", "轮动", "题材",
     "热点", "后市", "减仓", "加仓", "轻仓", "重仓", "空仓", "满仓",
-    "情绪", "走势", "怎么走",
+    "情绪", "走势", "怎么走", "新闻", "政策", "事件", "海外", "美股",
+    "港股", "美联储", "降息", "降准", "关税", "消息面", "利好", "利空",
+    "影响哪些行业",
 )
 
 
@@ -699,9 +726,11 @@ def run_tool(
             return _load_skill_tool(arguments)
         if name == "resolve_company":
             return _resolve_company_tool(arguments)
-        # 大盘数据不属于任何一家公司，必须先于公司解析
+        # 大盘与新闻数据不属于任何一家公司，必须先于公司解析
         if name == "get_market_overview":
             return _market_overview_tool()
+        if name == "get_news_events":
+            return _news_events_tool(arguments)
 
         code, error, _ = resolve_code(arguments.get("company"), default_company)
         if code is None:
@@ -858,6 +887,53 @@ def _market_overview_tool() -> ToolResult:
         as_of=overview.get("as_of"),
         sources=tuple(_market_sources(data)),
         data=data,
+    )
+
+
+def _news_event_sources(result: dict) -> list[Source]:
+    """每个实际返回数据的新闻源登记一条来源，事件里用 source_id 回指。"""
+    fetched = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    sources: list[Source] = []
+    seen: set[str] = set()
+    for feed in result.get("feeds") or []:
+        source_id = str(feed.get("source_id") or "")
+        if not source_id or not feed.get("count") or source_id in seen:
+            continue
+        seen.add(source_id)
+        sources.append(Source(
+            source_id,
+            str(feed.get("detail") or "新闻"),
+            str(feed.get("name") or "来源"),
+            str(feed.get("as_of") or result.get("as_of") or ""),
+            fetched,
+        ))
+    return sources
+
+
+def _news_events_tool(arguments: dict) -> ToolResult:
+    try:
+        limit = int(arguments.get("limit") or 12)
+    except (TypeError, ValueError):
+        limit = 12
+    limit = max(1, min(20, limit))
+    try:
+        result = build_news_events(limit=limit)
+    except Exception as error:  # noqa: BLE001 - 数据源异常交给模型说明
+        return ToolResult(ok=False, error=f"新闻事件获取失败：{error}")
+
+    if not result.get("events") and not result.get("overseas"):
+        detail = "；".join(
+            f"{key}：{value}"
+            for key, value in (result.get("errors") or {}).items()
+        )
+        return ToolResult(
+            ok=False, error=f"新闻事件获取失败：{detail or '没有可用数据'}"
+        )
+    return ToolResult(
+        ok=True,
+        as_of=result.get("as_of"),
+        sources=tuple(_news_event_sources(result)),
+        data=result,
     )
 
 

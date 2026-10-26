@@ -42,6 +42,7 @@ UNCACHED_TOOLS = frozenset({
     "get_announcements",
     "get_earnings_forecasts",
     "get_market_overview",
+    "get_news_events",
 })
 
 # 上下文预算：按 DeepSeek 128K 留出 thinking、回答和本轮继续取数的空间。
