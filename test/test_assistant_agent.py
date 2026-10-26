@@ -327,6 +327,9 @@ def test_prompt_is_skill_based() -> None:
     assert "screen_candidates" in SYSTEM_PROMPT
     assert "strategy_risk" in SYSTEM_PROMPT
     assert "build_strategy_plan" in SYSTEM_PROMPT
+    assert "review_eval" in SYSTEM_PROMPT
+    assert "review_research_reports" in SYSTEM_PROMPT
+    assert "save_daily_judgment" in SYSTEM_PROMPT
     # 具体判据必须只在 skill 里，不能回到系统提示词
     for phrase in ("第一问", "第二问", "护城河", "三句话", "品牌", "可证伪"):
         assert phrase not in SYSTEM_PROMPT, phrase

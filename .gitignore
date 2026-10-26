@@ -24,3 +24,6 @@ data/assistant_state.json
 data/assistant.db
 data/backups/
 data/assistant_web.log
+data/assistant_web.err.log
+# 复盘存档：本地每日判断，不入库
+data/research.db

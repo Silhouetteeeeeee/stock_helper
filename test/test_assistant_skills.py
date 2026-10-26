@@ -16,7 +16,7 @@ def test_catalog() -> None:
         "business_model", "moat", "operating_history", "financial_safety",
         "growth_outlook", "management", "valuation", "margin_of_safety",
         "market_view", "news_events", "sector_rotation", "stock_screening",
-        "strategy_risk",
+        "strategy_risk", "review_eval",
     ]
     assert all(item["description"] for item in items)
     assert all(item["title"] for item in items)
@@ -210,6 +210,19 @@ def test_strategy_risk_skill() -> None:
     assert "必涨" in text
 
 
+def test_review_eval_skill() -> None:
+    skill = get_skill("review_eval")
+    assert skill is not None
+    assert "复盘" in skill.title
+    text = skill.instructions
+    for phrase in ("命中率", "超额", "最大回撤", "交易成本", "失误", "待观察",
+                   "save_daily_judgment", "review_research_reports",
+                   "样本量", "不构成投资建议"):
+        assert phrase in text, phrase
+    assert "不计入命中率" in text
+    assert "方法有效" in text
+
+
 def test_unknown_skill() -> None:
     assert get_skill("q9") is None
     assert get_skill(None) is None
@@ -230,6 +243,7 @@ def main() -> None:
     test_sector_rotation_skill()
     test_stock_screening_skill()
     test_strategy_risk_skill()
+    test_review_eval_skill()
     test_unknown_skill()
     print("PASS")
     sys.stdout.flush()

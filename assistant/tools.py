@@ -40,6 +40,8 @@ from stock.management import build_management
 from stock.market import build_market_overview
 from research.market_state import classify_market
 from research.news_events import build_news_events
+from research.review import build_review as review_reports
+from research.review import save_daily_judgment as save_judgment
 from research.screening import screen_candidates as build_screen
 from research.sector_rotation import build_sector_rotation
 from research.strategy import build_plan as plan_strategy
@@ -720,6 +722,80 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_daily_judgment",
+            "description": (
+                "把当天的大盘状态、行业强弱、候选股名单和（可选）策略方案存档到本地，"
+                "供之后复盘评估；同一天重复保存会覆盖旧记录。"
+                "回答“记一下今天的判断”“保存今天的分析”时调用；不需要公司参数。"
+                "存档只保存规则引擎的判断，不保存回答里的文字结论"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "strategy": {
+                        "type": "object",
+                        "description": (
+                            "可选：此前 build_strategy_plan 返回的方案，"
+                            "用于之后评估策略效果；没有做过策略方案就不要传"
+                        ),
+                        "properties": {
+                            "stance": {"type": "string"},
+                            "total_pct": {"type": "number"},
+                            "single_pct": {"type": "number"},
+                            "stop_loss_pct": {"type": "number"},
+                            "position_pct": {"type": "number"},
+                            "caps": {
+                                "type": "object",
+                                "properties": {
+                                    "total_pct": {"type": "number"},
+                                    "single_pct": {"type": "number"},
+                                    "stop_loss_pct": {"type": "number"},
+                                },
+                                "additionalProperties": False,
+                            },
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "review_research_reports",
+            "description": (
+                "复盘已保存的每日判断：计算之后 horizon 个交易日的实际走势，"
+                "统计市场状态、行业方向与候选股的命中率，候选股相对沪深300的"
+                "超额收益、区间最大回撤与扣成本后的净超额，并列出失误原因。"
+                "没走完观察窗口的判断标为待观察，不计入命中率。"
+                "回答“上次判断准不准”“复盘一下”“命中率如何”“策略有没有效果”时调用；"
+                "不需要公司参数。还没有存档时会要求先保存"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "horizon": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "description": "观察窗口（交易日），默认 5",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 60,
+                        "description": "复盘最近多少个交易日的存档，默认 20",
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 
@@ -860,6 +936,10 @@ def run_tool(
             return _screen_candidates_tool(arguments)
         if name == "build_strategy_plan":
             return _strategy_plan_tool(arguments)
+        if name == "save_daily_judgment":
+            return _save_judgment_tool(arguments)
+        if name == "review_research_reports":
+            return _review_reports_tool(arguments)
 
         code, error, _ = resolve_code(arguments.get("company"), default_company)
         if code is None:
@@ -1209,6 +1289,98 @@ def _strategy_plan_tool(arguments: dict) -> ToolResult:
         sources=tuple(sources),
         data=result,
     )
+
+
+def _save_judgment_tool(arguments: dict) -> ToolResult:
+    strategy = arguments.get("strategy")
+    if not isinstance(strategy, dict):
+        strategy = None
+    try:
+        result = save_judgment(strategy=strategy)
+    except Exception as error:  # noqa: BLE001 - 存档失败交给模型如实说明
+        return ToolResult(ok=False, error=f"判断存档失败：{error}")
+
+    if not result.get("saved"):
+        detail = "；".join(
+            f"{key}：{value}" for key, value in (result.get("errors") or {}).items()
+        )
+        return ToolResult(
+            ok=False,
+            data=result,
+            error=f"判断存档失败：{detail or '没有取到任何可存档的数据'}",
+        )
+
+    trade_date = result.get("trade_date") or ""
+    state = (result.get("market") or {}).get("state")
+    stored = result.get("store") or {}
+    source = Source(
+        id=f"research:{trade_date}",
+        label="每日判断存档",
+        detail=(
+            f"{state or '市场状态缺失'} · "
+            f"{len(result.get('candidates') or [])} 只候选 · "
+            f"{'覆盖' if stored.get('replaced') else '新增'}"
+        ),
+        as_of=result.get("as_of"),
+        fetched_at=stored.get("saved_at") or result.get("as_of"),
+    )
+    return ToolResult(
+        ok=True,
+        as_of=result.get("as_of"),
+        sources=(source,),
+        data=result,
+    )
+
+
+def _review_reports_tool(arguments: dict) -> ToolResult:
+    try:
+        horizon = int(arguments.get("horizon") or 5)
+    except (TypeError, ValueError):
+        horizon = 5
+    horizon = max(1, min(20, horizon))
+    try:
+        limit = int(arguments.get("limit") or 20)
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(1, min(60, limit))
+
+    try:
+        result = review_reports(limit=limit, horizon=horizon)
+    except Exception as error:  # noqa: BLE001
+        return ToolResult(ok=False, error=f"复盘失败：{error}")
+
+    if not result.get("reports"):
+        detail = "；".join(result.get("notes") or [])
+        return ToolResult(
+            ok=False,
+            data=result,
+            error=f"复盘失败：{detail or '还没有保存过每日判断'}",
+        )
+
+    as_of = result.get("as_of")
+    sources = [
+        Source(
+            id=f"review:{row.get('trade_date')}",
+            label="复盘样本",
+            detail=(
+                f"{(row.get('market') or {}).get('state') or '状态缺失'} · "
+                f"{len(row.get('candidates') or [])} 只候选"
+            ),
+            as_of=row.get("trade_date"),
+            fetched_at=row.get("saved_at"),
+        )
+        for row in result.get("reports") or []
+    ]
+    sources.append(
+        Source(
+            id=f"review:benchmark:{as_of[:10]}",
+            label="复盘基准",
+            detail=f"{result.get('benchmark')} 日线与行业、个股日线",
+            as_of=as_of,
+            fetched_at=as_of,
+        )
+    )
+    return ToolResult(ok=True, as_of=as_of, sources=tuple(sources), data=result)
 
 
 def _company_profile(code: str) -> ToolResult:

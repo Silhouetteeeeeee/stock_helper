@@ -46,6 +46,8 @@ UNCACHED_TOOLS = frozenset({
     "get_sector_rotation",
     "screen_candidates",
     "build_strategy_plan",
+    "save_daily_judgment",
+    "review_research_reports",
 })
 
 # 上下文预算：按 DeepSeek 128K 留出 thinking、回答和本轮继续取数的空间。
