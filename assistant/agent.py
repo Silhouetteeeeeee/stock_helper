@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import time
 from dataclasses import dataclass, replace
 
 from openai import (
@@ -534,12 +535,15 @@ class ResearchAgent:
                 for call in tool_calls:
                     name = call["function"].get("name") or "未知工具"
                     arguments = _parse_arguments(call["function"].get("arguments"))
+                    started = time.monotonic()
                     try:
                         result = self._run_tool(name, arguments)
                     except Exception as error:  # noqa: BLE001 - 每个 id 都必须有回执
                         result = ToolResult(
                             ok=False, error=f"工具执行失败：{error}"
                         )
+                    # 耗时跟着步骤一起落库；旧记录没有这个字段，页面按 0 显示
+                    duration_ms = max(0, int((time.monotonic() - started) * 1000))
                     for source in result.sources:
                         self._registry[source.id] = source
                     tool_message = {
@@ -562,6 +566,7 @@ class ResearchAgent:
                         "error": result.error,
                         "sources": [source.id for source in result.sources],
                         "cached": result.cached,
+                        "duration_ms": duration_ms,
                     }
                     trace.append(step)
                     notify({"type": "tool", **step})

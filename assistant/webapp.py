@@ -18,6 +18,7 @@ from assistant.env import load_env
 from assistant.render import (
     citation_html,
     context_meter_style,
+    duration_text,
     source_lines,
     stream_text,
 )
@@ -196,7 +197,8 @@ def _trace_line(step: dict) -> str:
     company = step.get("company") or "--"
     as_of = step.get("as_of") or "无日期"
     outcome = "成功" if step.get("ok") else f"失败：{step.get('error') or '未知错误'}"
-    return f"{step.get('round') or '-'}. {name} · {company} · {as_of} · {outcome}"
+    duration = duration_text(step.get("duration_ms"))
+    return f"{step.get('round') or '-'}. {name} · {company} · {as_of} · {outcome} · 耗时 {duration}"
 
 
 def _render_assistant(message: dict) -> None:
@@ -409,7 +411,8 @@ if prompt and active_code:
                         outcome = "成功" if event.get("ok") else "失败"
                     steps.caption(
                         f"已取数：{event.get('name')} · "
-                        f"{event.get('company') or '--'} · {outcome}"
+                        f"{event.get('company') or '--'} · {outcome} · "
+                        f"耗时 {duration_text(event.get('duration_ms'))}"
                     )
                     # 取数结果已经进了历史，占用会跳一截
                     _render_context_meter(agent, meter_slot)

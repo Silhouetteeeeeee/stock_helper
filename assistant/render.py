@@ -28,6 +28,12 @@ def _field(source, name: str) -> str:
     return str(value or "")
 
 
+def duration_text(milliseconds) -> str:
+    """工具耗时：一秒以内按毫秒，超过按秒；缺字段的旧记录按 0 处理。"""
+    value = max(0, int(milliseconds or 0))
+    return f"{value / 1000:.1f}s" if value >= 1000 else f"{value}ms"
+
+
 def citation_ids(sources) -> dict[str, int]:
     """来源 id → 展示编号（从 1 开始，先到先得）。"""
     mapping: dict[str, int] = {}

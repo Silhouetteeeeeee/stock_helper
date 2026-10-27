@@ -151,6 +151,7 @@ def stream_answer(cid: int | None, question: str) -> StreamingResponse:
                         "company": event.get("company"),
                         "ok": bool(event.get("ok")),
                         "cached": bool(event.get("cached")),
+                        "duration_ms": int(event.get("duration_ms") or 0),
                     })
                     events.put({"type": "meter", "usage": agent.context_usage()})
 

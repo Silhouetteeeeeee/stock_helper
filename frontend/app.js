@@ -55,6 +55,12 @@ function decorate(message) {
   return { ...message, html: renderBody(message.text || "", message.sources || [], false) };
 }
 
+// 工具耗时：一秒以内按毫秒，超过按秒；旧记录没有这个字段，按 0 显示
+function formatDuration(value) {
+  const ms = Math.max(0, Math.round(Number(value) || 0));
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+}
+
 function formatTokens(value) {
   const n = Number(value) || 0;
   if (n >= 10000) return `${(n / 10000).toFixed(1)}万`;
@@ -271,7 +277,7 @@ const ChatPane = {
               this.statusLine = "";
             } else if (event.type === "tool") {
               const outcome = event.cached ? "复用缓存" : event.ok ? "成功" : "失败";
-              this.statusLine = `已取数 · ${event.name || "工具"} · ${event.company || "--"} · ${outcome}`;
+              this.statusLine = `已取数 · ${event.name || "工具"} · ${event.company || "--"} · ${outcome} · ${formatDuration(event.duration_ms)}`;
             } else if (event.type === "meter") {
               this.usage = event.usage || null;
             } else if (event.type === "warning") {
@@ -365,7 +371,7 @@ const ChatPane = {
       const count = steps.length || message.trace_count || 0;
       const lines = steps.map((step) => {
         const outcome = step.ok === false ? `失败：${step.error || "未知错误"}` : "成功";
-        return `${step.round || "-"} · ${step.name || "未知工具"} · ${step.company || "--"} · ${step.as_of || "无日期"} · ${outcome}`;
+        return `${step.round || "-"} · ${step.name || "未知工具"} · ${step.company || "--"} · ${step.as_of || "无日期"} · ${outcome} · 耗时 ${formatDuration(step.duration_ms)}`;
       });
       return { count, lines };
     },

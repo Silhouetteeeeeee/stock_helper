@@ -85,11 +85,14 @@ def test_loop_and_citation() -> None:
 
     assert answer.text == "能量饮料是主力[[finance:605499:2026-06-30]]。"
     assert [source.id for source in answer.citations] == [FIN.id]
-    assert answer.trace == [{
+    step = dict(answer.trace[0])
+    duration = step.pop("duration_ms", None)
+    assert isinstance(duration, int) and duration >= 0, duration
+    assert step == {
         "round": 1, "name": "get_finance", "arguments": {},
         "ok": True, "company": "605499", "as_of": "2026-06-30",
         "error": None, "sources": [FIN.id], "cached": False,
-    }], answer.trace
+    }, step
     assert answer.issues == [] and answer.rounds == 2
     assert len(client.calls) == 2
     first, second = client.calls

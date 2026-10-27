@@ -30,6 +30,17 @@ def test_format() -> None:
     assert "2026-10-24 15:57:57" in text
     assert "研究过程" in text and "get_finance" in text
     assert "第 1 轮" in text
+    # 旧记录没有耗时字段，按 0 显示
+    assert "耗时 0ms" in text
+
+    timed = Answer(
+        text=ANSWER.text,
+        citations=ANSWER.citations,
+        trace=[{**ANSWER.trace[0], "duration_ms": 1234}],
+        issues=[],
+        rounds=2,
+    )
+    assert "耗时 1.2s" in cli.format_answer(timed)
 
 
 def test_main_one_shot() -> None:

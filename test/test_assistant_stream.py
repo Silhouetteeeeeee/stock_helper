@@ -111,6 +111,10 @@ def test_stream_text_and_tool_events() -> None:
     assert tool_event["name"] == "get_finance"
     assert tool_event["company"] == "605499"
     assert tool_event["ok"] is True
+    # 每次工具调用都带耗时，流式事件和最终 trace 一致
+    assert isinstance(tool_event["duration_ms"], int), tool_event
+    assert tool_event["duration_ms"] >= 0
+    assert answer.trace[0]["duration_ms"] == tool_event["duration_ms"]
 
     assert answer.text == ANSWER
     assert [citation.id for citation in answer.citations] == [FIN.id]

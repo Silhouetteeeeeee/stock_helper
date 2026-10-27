@@ -13,6 +13,7 @@ import json
 import sys
 
 from .agent import Answer, AssistantError, ResearchAgent, build_client
+from .render import duration_text
 
 
 def format_answer(answer: Answer) -> str:
@@ -53,6 +54,7 @@ def format_answer(answer: Answer) -> str:
                 line += f" · 数据 {step['as_of']}"
             if step.get("error"):
                 line += f" · {step['error']}"
+            line += f" · 耗时 {duration_text(step.get('duration_ms'))}"
             lines.append(line)
 
     if answer.issues:
