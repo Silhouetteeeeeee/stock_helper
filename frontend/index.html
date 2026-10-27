@@ -38,7 +38,7 @@
     </div>
 
     <div class="side-foot">
-      <p>回答里的 <span class="inline-cite">[n]</span> 对应来源角标，悬停看明细。</p>
+      <p>回答里的 <span class="inline-cite">[n]</span> 对应来源角标，悬停看明细，点击看完整来源。</p>
       <p>拖动最近对话到右侧，或点「分屏」，两边各自滚动、互不影响。</p>
       <p class="proto"><a href="http://127.0.0.1:8501" target="_blank" rel="noreferrer">Streamlit 版</a> · Vue 3 · 8502</p>
     </div>
@@ -91,7 +91,7 @@
         <section class="empty" v-if="!messages.length && phase !== 'streaming'">
           <h1>{{ secondary ? '分屏对话' : '投资助手' }}</h1>
           <p class="lede" v-if="secondary">直接在下面提问，会在这里开一段新对话；也可以从左边拖一个最近对话过来。两边各自滚动、各自提问，互不影响。</p>
-          <p class="lede" v-else>提到哪家公司就聊哪家。回答里的 <span class="inline-cite">[1]</span> 是来源角标，悬停可看类型、明细和数据日期；也可以直接问大盘。</p>
+          <p class="lede" v-else>提到哪家公司就聊哪家。回答里的 <span class="inline-cite">[1]</span> 是来源角标，悬停可看类型、明细和数据日期，点击会在侧栏展开完整来源；也可以直接问大盘。</p>
           <div class="examples">
             <button v-for="example in examples" :key="example" class="example" @click="useExample(example)">
               <span>{{ example }}</span><span class="arrow">→</span>
@@ -99,11 +99,12 @@
           </div>
         </section>
 
-        <div class="messages" @mouseover="showTip" @mouseout="onTipOut">
+        <div class="messages" @mouseover="showTip" @mouseout="onTipOut" @click="onCiteClick">
           <div
             v-for="(message, index) in messages"
             :key="index"
             class="msg"
+            :data-msg-index="index"
             :class="[message.role === 'user' ? 'user' : 'assistant', { error: message.role === 'error', warning: message.warning }]"
           >
             <div class="who">
@@ -118,14 +119,25 @@
                 <div class="body" v-html="message.html || ''"></div>
                 <div class="sources" v-if="message.sources && message.sources.length">
                   <div class="sources-title">来源</div>
-                  <div class="source-row" v-for="row in sourceRows(message)" :key="row.n">
+                  <div
+                    class="source-row"
+                    v-for="row in sourceRows(message)"
+                    :key="row.n"
+                    role="button"
+                    tabindex="0"
+                    title="查看这条来源的完整信息"
+                    @click.stop="openSource(message, row.index)"
+                    @keydown.enter.stop="openSource(message, row.index)"
+                  >
                     <span class="src-num">{{ row.n }}</span>
                     <span class="src-label">{{ row.label }}</span>
                     <span class="src-detail" v-if="row.detail">{{ row.detail }}</span>
                     <span class="src-asof" v-if="row.asof">{{ row.asof }}</span>
-                    <a class="src-link" v-if="row.url" :href="row.url" target="_blank" rel="noreferrer" title="打开原文">↗</a>
+                    <a class="src-link" v-if="row.url" :href="row.url" target="_blank" rel="noreferrer" title="打开原文" @click.stop>↗</a>
                   </div>
-                  <div class="src-note" v-if="message.sources.length > 6">另有 {{ message.sources.length - 6 }} 条来源</div>
+                  <button class="src-note src-more" v-if="message.sources.length > 6" @click.stop="openSource(message, 6)">
+                    另有 {{ message.sources.length - 6 }} 条来源，查看全部 →
+                  </button>
                 </div>
                 <details class="trace" v-if="traceOf(message).count">
                   <summary>研究过程 · {{ traceOf(message).count }} 次取数</summary>
@@ -178,6 +190,50 @@
       </div>
     </div>
 
+    <aside class="source-panel" v-if="sourceView" role="dialog" aria-label="来源详情">
+      <header class="source-panel-head">
+        <span class="source-panel-title">来源详情</span>
+        <button class="source-panel-close" @click="closeSource" title="关闭（Esc）">✕</button>
+      </header>
+      <div class="source-panel-body">
+        <div class="sp-head">
+          <span class="src-num">{{ sourceView.n }}</span>
+          <span class="sp-label">{{ sourceView.label }}</span>
+        </div>
+        <p class="sp-detail" v-if="sourceView.detail">{{ sourceView.detail }}</p>
+        <dl class="sp-meta">
+          <div><dt>数据日期</dt><dd>{{ sourceView.asof || "未标注" }}</dd></div>
+          <div><dt>抓取时间</dt><dd>{{ sourceView.fetched || "未知" }}</dd></div>
+          <div><dt>来源编号</dt><dd class="mono">{{ sourceView.id || "--" }}</dd></div>
+        </dl>
+        <a class="sp-link" v-if="sourceView.url" :href="sourceView.url" target="_blank" rel="noreferrer">打开原文 ↗</a>
+
+        <section class="sp-sec">
+          <h3>回答里的引用</h3>
+          <p class="sp-empty" v-if="!sourceView.occurrences.length">这段回答没有直接引用这条来源。</p>
+          <blockquote class="sp-cite" v-for="(line, lineIndex) in sourceView.occurrences" :key="lineIndex">{{ line }}</blockquote>
+        </section>
+
+        <section class="sp-sec">
+          <h3>取数记录</h3>
+          <p class="sp-empty" v-if="!sourceView.steps.length">没有对应的工具记录（旧对话可能没有明细）。</p>
+          <div class="sp-step" v-for="(step, stepIndex) in sourceView.steps" :key="stepIndex">
+            <div class="sp-step-line">
+              <span class="sp-step-name">{{ step.name }}</span>
+              <span class="sp-step-out" :class="{ cached: step.cached, failed: !step.ok }">{{ step.ok ? (step.cached ? "复用缓存" : "成功") : "失败" }}</span>
+            </div>
+            <div class="sp-step-meta">{{ step.meta }}</div>
+            <div class="sp-step-error" v-if="step.error">{{ step.error }}</div>
+          </div>
+        </section>
+      </div>
+      <footer class="source-panel-foot" v-if="sourceView.total > 1">
+        <button class="sp-nav" :disabled="sourceView.index <= 0" @click="stepSource(-1)">← 上一条</button>
+        <span class="sp-count">{{ sourceView.index + 1 }} / {{ sourceView.total }}</span>
+        <button class="sp-nav" :disabled="sourceView.index >= sourceView.total - 1" @click="stepSource(1)">下一条 →</button>
+      </footer>
+    </aside>
+
     <div
       class="tip"
       v-if="tip"
@@ -193,6 +249,7 @@
       <div class="tip-detail" v-if="tip.detail">{{ tip.detail }}</div>
       <div class="tip-asof" v-if="tip.asof">数据日期 {{ tip.asof }}</div>
       <a class="tip-url" v-if="tip.url" :href="tip.url" target="_blank" rel="noreferrer">打开原文 ↗</a>
+      <div class="tip-more">点击角标查看完整来源</div>
     </div>
   </section>
 </template>

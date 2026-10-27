@@ -37,6 +37,7 @@ function renderBody(text, sources, streaming) {
       const number = hit ? hit.n : "?";
       const label = source.label || source.id || (hit ? "未知来源" : "来源未登记");
       const attrs = [
+        `data-id="${escapeAttr(source.id || "")}"`,
         `data-label="${escapeAttr(label)}"`,
         `data-detail="${escapeAttr(source.detail || "")}"`,
         `data-asof="${escapeAttr(source.as_of || "")}"`,
@@ -47,7 +48,7 @@ function renderBody(text, sources, streaming) {
   }
   const html = marked.parse(src, { gfm: true, breaks: true });
   return DOMPurify.sanitize(html, {
-    ADD_ATTR: ["data-label", "data-detail", "data-asof", "data-url"],
+    ADD_ATTR: ["data-id", "data-label", "data-detail", "data-asof", "data-url"],
   });
 }
 
@@ -109,6 +110,7 @@ const ChatPane = {
       usage: null,
       copied: -1,
       tip: null,
+      sourceView: null,
     };
   },
   computed: {
@@ -136,10 +138,17 @@ const ChatPane = {
     this.hideTimer = null;
     this.lastStreamScroll = 0;
     this.tipAnchor = null;
+    this.sourceMsg = null;
+    this.sourceIndex = -1;
+    this.onEscape = (event) => {
+      if (event.key === "Escape") this.closeSource();
+    };
+    window.addEventListener("keydown", this.onEscape);
   },
   beforeUnmount() {
     if (this.noticeTimer) clearTimeout(this.noticeTimer);
     if (this.hideTimer) clearTimeout(this.hideTimer);
+    window.removeEventListener("keydown", this.onEscape);
   },
   methods: {
     formatTokens,
@@ -172,6 +181,7 @@ const ChatPane = {
         this.notice = "";
         this.copied = -1;
         this.hideTip();
+        this.closeSource();
         this.scroll(true);
         this.notify();
       } catch (error) {
@@ -189,6 +199,7 @@ const ChatPane = {
       this.notice = "";
       this.copied = -1;
       this.hideTip();
+      this.closeSource();
       this.scroll(true);
       this.notify();
     },
@@ -223,6 +234,7 @@ const ChatPane = {
       this.notice = "";
       this.copied = -1;
       this.hideTip();
+      this.closeSource();
       if (this.$refs.inputEl) this.$refs.inputEl.style.height = "auto";
       this.scroll(true);
 
@@ -360,11 +372,99 @@ const ChatPane = {
     sourceRows(message) {
       return (message.sources || []).slice(0, MAX_SOURCE_ROWS).map((source, index) => ({
         n: index + 1,
+        index,
         label: source.label || source.id || "未知来源",
         detail: source.detail || "",
         asof: source.as_of || "",
         url: source.url || "",
       }));
+    },
+    // ---------------- 来源详情侧栏 ----------------
+    openSource(message, index) {
+      const sources = message.sources || [];
+      const source = sources[index];
+      if (!source) return;
+      this.hideTip();
+      const id = String(source.id || "");
+      this.sourceMsg = message;
+      this.sourceIndex = index;
+      this.sourceView = {
+        index,
+        total: sources.length,
+        n: index + 1,
+        label: source.label || id || "未知来源",
+        detail: source.detail || "",
+        asof: source.as_of || "",
+        fetched: source.fetched_at || "",
+        url: source.url || "",
+        id,
+        occurrences: this.citationSnippets(message, id, index + 1),
+        steps: this.sourceSteps(message, id),
+      };
+    },
+    stepSource(delta) {
+      if (!this.sourceMsg) return;
+      const next = this.sourceIndex + delta;
+      const total = (this.sourceMsg.sources || []).length;
+      if (next < 0 || next >= total) return;
+      this.openSource(this.sourceMsg, next);
+    },
+    closeSource() {
+      this.sourceView = null;
+      this.sourceMsg = null;
+      this.sourceIndex = -1;
+    },
+    // 回答里引用这条来源的原句：截取引号附近的一段，顶部角标换成 [n]
+    citationSnippets(message, id, number) {
+      const marker = `[[${id}]]`;
+      const text = String(message.text || "");
+      const seen = new Set();
+      const snippets = [];
+      text.split(/\n+/).forEach((raw) => {
+        const para = raw.trim();
+        const at = para.indexOf(marker);
+        if (at < 0) return;
+        const start = Math.max(0, at - 100);
+        const end = Math.min(para.length, at + marker.length + 100);
+        const snippet = `${start > 0 ? "…" : ""}${para.slice(start, end)}${end < para.length ? "…" : ""}`
+          .replace(/\[\[([^\[\]]+)\]\]/g, (match) => (match === marker ? `[${number}]` : ""))
+          .replace(/\s+/g, " ")
+          .trim();
+        if (!snippet || seen.has(snippet)) return;
+        seen.add(snippet);
+        snippets.push(snippet);
+      });
+      return snippets.slice(0, 4);
+    },
+    // 哪次工具调用取回了这条来源；旧记录没有 trace 明细时为空
+    sourceSteps(message, id) {
+      const steps = Array.isArray(message.trace) ? message.trace : [];
+      return steps
+        .filter((step) => (step.sources || []).map(String).includes(id))
+        .map((step) => {
+          const parts = [];
+          if (step.round) parts.push(`第 ${step.round} 轮`);
+          if (step.company) parts.push(step.company);
+          if (step.as_of) parts.push(step.as_of);
+          parts.push(`耗时 ${formatDuration(step.duration_ms)}`);
+          const args = this.argumentText(step.arguments);
+          if (args) parts.push(args);
+          return {
+            name: step.name || "未知工具",
+            ok: step.ok !== false,
+            cached: !!step.cached,
+            error: step.error || "",
+            meta: parts.join(" · "),
+          };
+        });
+    },
+    argumentText(args) {
+      if (!args || typeof args !== "object") return "";
+      const parts = Object.entries(args)
+        .filter(([key, value]) => key !== "company" && value !== null && value !== undefined && value !== "")
+        .map(([key, value]) => `${key}=${typeof value === "object" ? JSON.stringify(value) : value}`);
+      const text = parts.join(" · ");
+      return text.length > 140 ? `${text.slice(0, 140)}…` : text;
     },
     traceOf(message) {
       const steps = Array.isArray(message.trace) ? message.trace : [];
@@ -391,6 +491,19 @@ const ChatPane = {
     },
 
     // ---------------- 引用悬停卡 ----------------
+    onCiteClick(event) {
+      const target = event.target;
+      const cite = target && target.closest ? target.closest("sup.cite") : null;
+      if (!cite) return;
+      const messageEl = cite.closest(".msg");
+      if (!messageEl) return;
+      const message = this.messages[Number(messageEl.dataset.msgIndex)];
+      if (!message || !message.sources) return;
+      const id = cite.dataset.id || "";
+      const index = message.sources.findIndex((source) => String(source.id || "") === id);
+      if (index < 0) return;
+      this.openSource(message, index);
+    },
     showTip(event) {
       const target = event.target;
       const cite = target && target.closest ? target.closest("sup.cite") : null;
