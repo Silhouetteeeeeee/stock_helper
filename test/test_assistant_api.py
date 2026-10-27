@@ -13,6 +13,7 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import assistant.api as api
+from assistant import research_memory as api_memory
 from assistant.store import ConversationStore
 
 SOURCE = {
@@ -96,8 +97,78 @@ def test_evidence() -> None:
             api.STORE = original
 
 
+def test_research_endpoints() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        store = api_memory.ResearchMemoryStore(Path(folder) / "memory.db")
+        store.ensure_company("605499", "东鹏饮料")
+        store.append("605499", "facts", {
+            "fact_type": "盈利能力",
+            "content": "2025 年营业收入 208.75 亿元",
+            "report_period": "2025 年度",
+            "source_id": "finance:605499:2025-12-31",
+        })
+        store.append("605499", "conclusions", {
+            "title": "增长来源", "statement": "增长由核心单品驱动",
+            "based_on_fact_ids": ["F001"],
+        })
+        original = api.MEMORY
+        api.MEMORY = store
+        try:
+            response = asyncio.run(api.research_companies(SimpleNamespace(query_params={})))
+            payload = json.loads(response.body)
+            assert payload["companies"][0]["code"] == "605499"
+            assert payload["companies"][0]["name"] == "东鹏饮料"
+            assert payload["companies"][0]["counts"]["facts"] == 1
+
+            response = asyncio.run(api.research_company(SimpleNamespace(
+                path_params={"code": "605499"}, query_params={},
+            )))
+            detail = json.loads(response.body)
+            assert detail["facts"][0]["fact_id"] == "F001"
+            assert detail["conclusions"][0]["conclusion_id"] == "G001"
+            assert detail["changes"] == [] and detail["hypotheses"] == [] and detail["questions"] == []
+            assert "last_reviewed_at" in detail["company"]
+            assert "updated_at" in detail["company"]
+
+            response = asyncio.run(api.research_company(SimpleNamespace(
+                path_params={"code": "605499"}, query_params={"section": "facts", "limit": "1"},
+            )))
+            filtered = json.loads(response.body)
+            assert filtered["section"] == "facts" and filtered["total"] == 1
+
+            response = asyncio.run(api.research_company(SimpleNamespace(
+                path_params={"code": "605499"}, query_params={"status": "有效"},
+            )))
+            filtered_detail = json.loads(response.body)
+            assert filtered_detail["conclusions"][0]["conclusion_id"] == "G001"
+            assert filtered_detail["facts"] == []
+
+            response = asyncio.run(api.research_company(SimpleNamespace(
+                path_params={"code": "605499"}, query_params={"section": "nope"},
+            )))
+            assert response.status_code == 400
+            response = asyncio.run(api.research_company(SimpleNamespace(
+                path_params={"code": "999999"}, query_params={},
+            )))
+            assert response.status_code == 404
+            response = asyncio.run(api.research_company(SimpleNamespace(
+                path_params={"code": "abc"}, query_params={},
+            )))
+            assert response.status_code == 404
+
+            paths = {route.path for route in api.app.routes if hasattr(route, "path")}
+            assert "/api/research/companies" in paths
+            assert "/api/research/companies/{code}" in paths
+            for route in api.app.routes:
+                if getattr(route, "path", "").startswith("/api/research/companies"):
+                    assert "POST" not in getattr(route, "methods", set())
+        finally:
+            api.MEMORY = original
+
+
 def main() -> None:
     test_evidence()
+    test_research_endpoints()
     print("PASS")
     sys.stdout.flush()
     os._exit(0)

@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import queue
+import re
 import threading
 import time
 from pathlib import Path
@@ -23,6 +24,7 @@ from starlette.staticfiles import StaticFiles
 
 from assistant.agent import ResearchAgent, build_client, estimate_tokens
 from assistant.env import load_env
+from assistant.research_memory import MemoryError, SECTIONS, default_store
 from assistant.store import ConversationStore, build_title
 from assistant.tools import (
     MARKET_CODE,
@@ -39,6 +41,7 @@ METER_INTERVAL = 0.4
 
 load_env()
 STORE = ConversationStore()
+MEMORY = default_store()
 AGENTS: dict[int, ResearchAgent] = {}
 AGENT_CODE: dict[int, str | None] = {}
 
@@ -335,6 +338,46 @@ async def ask(request):
     return stream_answer(cid, question)
 
 
+async def research_companies(request):
+    query = request.query_params.get("query", "")
+    return JSONResponse({"companies": MEMORY.companies(query=query)})
+
+
+async def research_company(request):
+    code = str(request.path_params.get("code") or "")
+    if not re.fullmatch(r"\d{6}", code):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    try:
+        limit = int(request.query_params.get("limit", 200))
+    except (TypeError, ValueError):
+        limit = 200
+    limit = max(1, min(limit, 500))
+    try:
+        offset = int(request.query_params.get("offset", 0))
+    except (TypeError, ValueError):
+        offset = 0
+    offset = max(0, offset)
+    status = request.query_params.get("status", "")
+    section = request.query_params.get("section", "")
+    if section:
+        if section not in SECTIONS:
+            return JSONResponse({"error": "unknown section"}, status_code=400)
+        try:
+            payload = MEMORY.read(
+                code, section, status=status, limit=limit, offset=offset,
+            )
+        except MemoryError:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse(payload)
+    detail = MEMORY.detail(
+        code, status=status,
+        limit=limit if "limit" in request.query_params else None,
+    )
+    if detail is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse(detail)
+
+
 app = Starlette(routes=[
     Route("/health", health),
     Route("/api/conversations", conversations),
@@ -342,6 +385,8 @@ app = Starlette(routes=[
     Route("/api/conversations/{cid:int}/evidence", source_evidence),
     Route("/api/conversations/{cid:int}/delete", delete_conversation, methods=["POST"]),
     Route("/api/ask", ask, methods=["POST"]),
+    Route("/api/research/companies", research_companies),
+    Route("/api/research/companies/{code}", research_company),
     # 页面与静态资源放最后：前面的 API 路由先匹配，剩下的都交给 frontend/
     Mount("/", app=StaticFiles(directory=FRONTEND, html=True)),
 ])
