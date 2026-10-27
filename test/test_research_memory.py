@@ -1,0 +1,170 @@
+from __future__ import annotations
+
+import os
+import sqlite3
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from assistant.research_memory import MemoryError, ResearchMemoryStore
+
+
+FACT = {
+    "subject": "东鹏饮料",
+    "fact_type": "盈利能力",
+    "content": "2025 年营业收入 208.75 亿元，同比增长 31.80%",
+    "metrics": [{"name": "营业收入", "value": 208.75, "unit": "亿元", "yoy": 31.8}],
+    "report_period": "2025 年度",
+    "published_at": "2026-03-31",
+    "source_id": "finance:605499:2025-12-31",
+    "source_label": "2025 年年度报告",
+    "source_locator": "主要会计数据",
+}
+
+
+def fresh_store(folder: str) -> ResearchMemoryStore:
+    return ResearchMemoryStore(Path(folder) / "research_memory.db")
+
+
+def test_schema_and_fact_roundtrip() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        store = fresh_store(folder)
+        store.ensure_company("605499", "东鹏饮料")
+        result = store.append("605499", "facts", FACT)
+        assert result["created"] is True
+        assert result["record"]["fact_id"] == "F001"
+        assert result["record"]["verification_status"] == "已核验"
+        assert result["counts"]["facts"] == 1
+
+        read = store.read("605499", "facts")
+        assert read["total"] == 1
+        assert read["records"][0]["content"] == FACT["content"]
+        assert read["company"]["name"] == "东鹏饮料"
+
+        connection = sqlite3.connect(Path(folder) / "research_memory.db")
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        indexes = {
+            row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+        assert "idx_fact_company" in indexes
+        connection.close()
+
+
+def test_fact_dedupe_and_multi_metric_key() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        store = fresh_store(folder)
+        first = store.append("605499", "facts", FACT)
+        duplicate = store.append("605499", "facts", dict(FACT))
+        assert duplicate["created"] is False
+        assert duplicate["record"]["fact_id"] == first["record"]["fact_id"]
+
+        # 指标多一项 => 不同事实
+        extra = dict(FACT)
+        extra["metrics"] = FACT["metrics"] + [
+            {"name": "归母净利润", "value": 44.15, "unit": "亿元", "yoy": 32.72}
+        ]
+        second = store.append("605499", "facts", extra)
+        assert second["record"]["fact_id"] == "F002"
+
+        # 定性事实：空白/全半角差异应归一化后去重
+        qualitative = {
+            "subject": "东鹏饮料", "fact_type": "战略", "report_period": "2025 年度",
+            "source_id": "announcement:1",
+            "content": "公司披露正在推进全国化布局",
+        }
+        store.append("605499", "facts", qualitative)
+        again = dict(qualitative)
+        again["content"] = "公司披露 正在推进全国化布局"
+        result = store.append("605499", "facts", again)
+        assert result["created"] is False
+
+
+def test_fact_requires_source_and_period() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        store = fresh_store(folder)
+        for key in ("source_id", "report_period", "content"):
+            broken = dict(FACT)
+            broken.pop(key)
+            try:
+                store.append("605499", "facts", broken)
+            except MemoryError:
+                pass
+            else:
+                raise AssertionError(f"缺少 {key} 应该被拒绝")
+
+
+def test_fact_rejects_oversize_record() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        store = fresh_store(folder)
+        too_long = dict(FACT, content="长" * 24000)
+        try:
+            store.append("605499", "facts", too_long)
+        except MemoryError:
+            pass
+        else:
+            raise AssertionError("单字段超过 20KB 应被拒绝")
+
+        many_metrics = dict(FACT)
+        many_metrics["metrics"] = [
+            {"name": f"指标{index}", "value": index, "unit": "个"} for index in range(2500)
+        ]
+        try:
+            store.append("605499", "facts", many_metrics)
+        except MemoryError:
+            pass
+        else:
+            raise AssertionError("单记录超过 50KB 应被拒绝")
+
+
+def test_ids_are_per_company() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        store = fresh_store(folder)
+        assert store.append("605499", "facts", FACT)["record"]["fact_id"] == "F001"
+        assert store.append("600519", "facts", dict(FACT, subject="贵州茅台"))["record"]["fact_id"] == "F001"
+        assert len(store.companies()) == 2
+        assert store.company("605499")["counts"]["facts"] == 1
+
+
+def test_concurrent_appends_keep_all_records() -> None:
+    import threading
+
+    with tempfile.TemporaryDirectory() as folder:
+        store = fresh_store(folder)
+        errors = []
+
+        def work(index: int) -> None:
+            for round_index in range(10):
+                record = dict(FACT)
+                record["metrics"] = [{"name": f"指标{index}-{round_index}", "value": index, "unit": "个"}]
+                try:
+                    store.append("605499", "facts", record)
+                except Exception as error:  # noqa: BLE001
+                    errors.append(error)
+
+        threads = [threading.Thread(target=work, args=(index,)) for index in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert not errors
+        assert store.company("605499")["counts"]["facts"] == 40
+
+
+def main() -> None:
+    test_schema_and_fact_roundtrip()
+    test_fact_dedupe_and_multi_metric_key()
+    test_fact_requires_source_and_period()
+    test_fact_rejects_oversize_record()
+    test_ids_are_per_company()
+    test_concurrent_appends_keep_all_records()
+    print("PASS")
+    sys.stdout.flush()
+    os._exit(0)
+
+
+if __name__ == "__main__":
+    main()
