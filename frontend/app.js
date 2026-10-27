@@ -683,6 +683,60 @@ createApp({
           .some((text) => String(text).toLowerCase().includes(needle))
       );
     },
+    archiveTabs() {
+      const counts = (this.archiveDetail && this.archiveDetail.counts) || {};
+      return [
+        { key: "conclusions", label: "结论", count: counts.conclusions || 0 },
+        { key: "facts", label: "事实", count: counts.facts || 0 },
+        { key: "hypotheses", label: "假设", count: counts.hypotheses || 0 },
+        { key: "changes", label: "变化", count: counts.changes || 0 },
+        { key: "questions", label: "问题", count: counts.questions || 0 },
+      ];
+    },
+    archiveConclusions() {
+      const items = ((this.archiveDetail && this.archiveDetail.conclusions) || []).slice();
+      const rank = (item) => (item.status === "有效" ? 0 : 1);
+      items.sort(
+        (a, b) =>
+          rank(a) - rank(b) ||
+          String(b.updated_at || "").localeCompare(String(a.updated_at || ""))
+      );
+      return items;
+    },
+    archiveFactGroups() {
+      const groups = [];
+      const index = new Map();
+      for (const fact of (this.archiveDetail && this.archiveDetail.facts) || []) {
+        const type = fact.fact_type || "未分类";
+        if (!index.has(type)) {
+          index.set(type, groups.length);
+          groups.push({ type, items: [] });
+        }
+        groups[index.get(type)].items.push(fact);
+      }
+      return groups;
+    },
+    archiveQuestionGroups() {
+      const items = (this.archiveDetail && this.archiveDetail.questions) || [];
+      const importanceOrder = ["高", "中", "低"];
+      const statusOrder = ["待处理", "调查中", "已解决", "暂时无法解决"];
+      const groups = [];
+      for (const importance of importanceOrder.concat("其他")) {
+        const bucket = items.filter((item) =>
+          importance === "其他"
+            ? !importanceOrder.includes(item.importance)
+            : item.importance === importance
+        );
+        if (!bucket.length) continue;
+        bucket.sort((a, b) => {
+          const ai = statusOrder.indexOf(a.status);
+          const bi = statusOrder.indexOf(b.status);
+          return (ai < 0 ? statusOrder.length : ai) - (bi < 0 ? statusOrder.length : bi);
+        });
+        groups.push({ importance, items: bucket });
+      }
+      return groups;
+    },
   },
   methods: {
     metaLine(item) {
@@ -737,8 +791,43 @@ createApp({
       this.archiveDetail = null;
       this.archiveError = "";
     },
-    loadArchiveDetail(code) {
+    showArchiveList() {
+      this.archiveDetail = null;
+      this.archiveCode = null;
+      this.archiveError = "";
+    },
+    async loadArchiveDetail(code) {
       this.archiveCode = code;
+      this.archiveLoading = true;
+      this.archiveError = "";
+      try {
+        const response = await fetch(`/api/research/companies/${encodeURIComponent(code)}`);
+        if (!response.ok) {
+          this.archiveDetail = null;
+          this.archiveError = "档案读取失败，请稍后重试";
+          return;
+        }
+        this.archiveDetail = await response.json();
+        this.archiveSection = "conclusions";
+      } catch (error) {
+        this.archiveDetail = null;
+        this.archiveError = "档案读取失败，请稍后重试";
+      } finally {
+        this.archiveLoading = false;
+      }
+    },
+    badgeClass(status) {
+      const text = String(status || "");
+      if (["有效", "已证实", "已解决"].includes(text)) return "ok";
+      if (["已推翻", "已证伪", "暂时无法解决"].includes(text)) return "err";
+      if (["待验证", "部分支持", "调查中", "待核验", "待处理"].includes(text)) return "warn";
+      return "";
+    },
+    refLabels(item) {
+      const labels = []
+        .concat(item.based_on_fact_ids || [])
+        .concat(item.based_on_hypothesis_ids || []);
+      return labels.join("、");
     },
 
     // ---------------- 打开对话 ----------------

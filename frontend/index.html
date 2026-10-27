@@ -83,20 +83,159 @@
     </div>
 
     <section class="archive-view" v-if="archiveOpen">
-      <header class="archive-head">
-        <button class="archive-back" @click="closeArchive">← 返回对话</button>
-        <span class="archive-title">研究档案</span>
-        <input class="archive-search" v-model="archiveQuery" placeholder="搜索公司或代码" />
-      </header>
-      <div class="archive-list">
-        <button class="archive-item" v-for="item in filteredArchives" :key="item.code" @click="openArchive(item.code)">
-          <span class="archive-name">{{ item.name }}</span>
-          <span class="archive-code">{{ item.code }}</span>
-          <span class="archive-conclusion">{{ item.conclusion || "尚无结论" }}</span>
-          <span class="archive-date">{{ shortDate(item.last_reviewed_at) || shortDate(item.updated_at) }}</span>
-        </button>
-        <div class="side-empty" v-if="!filteredArchives.length">还没有研究档案</div>
-      </div>
+      <template v-if="!archiveDetail">
+        <header class="archive-head">
+          <button class="archive-back" @click="closeArchive">← 返回对话</button>
+          <span class="archive-title">研究档案</span>
+          <input class="archive-search" v-model="archiveQuery" placeholder="搜索公司或代码" />
+        </header>
+        <div class="archive-list">
+          <button class="archive-item" v-for="item in filteredArchives" :key="item.code" @click="openArchive(item.code)">
+            <span class="archive-name">{{ item.name }}</span>
+            <span class="archive-code">{{ item.code }}</span>
+            <span class="archive-conclusion">{{ item.conclusion || "尚无结论" }}</span>
+            <span class="archive-date">{{ shortDate(item.last_reviewed_at) || shortDate(item.updated_at) }}</span>
+          </button>
+          <div class="side-empty" v-if="!filteredArchives.length">还没有研究档案</div>
+        </div>
+      </template>
+
+      <template v-else>
+        <header class="archive-head archive-detail-head">
+          <button class="archive-list-back" @click="showArchiveList">← 公司列表</button>
+          <span class="archive-title">
+            {{ archiveDetail.company.name }}
+            <span class="archive-code">{{ archiveDetail.company.code }}</span>
+          </span>
+          <span class="archive-meta">最后复核 {{ shortDate(archiveDetail.company.last_reviewed_at) || "尚未复核" }}</span>
+          <span class="archive-meta">最后写入 {{ shortDate(archiveDetail.company.updated_at) }}</span>
+          <button class="archive-back" @click="closeArchive">返回对话</button>
+        </header>
+
+        <nav class="archive-tabs">
+          <button
+            class="archive-tab"
+            v-for="tab in archiveTabs"
+            :key="tab.key"
+            :class="{ active: archiveSection === tab.key }"
+            @click="archiveSection = tab.key"
+          >{{ tab.label }}<span class="count">{{ tab.count }}</span></button>
+        </nav>
+
+        <div class="archive-body">
+          <p class="archive-empty" v-if="archiveLoading">正在读取档案…</p>
+          <p class="archive-empty" v-else-if="archiveError">{{ archiveError }}</p>
+          <template v-else>
+            <section class="archive-section" v-show="archiveSection === 'conclusions'">
+              <div class="archive-card" v-for="item in archiveConclusions" :key="item.conclusion_id">
+                <div class="archive-card-head">
+                  <span class="archive-id">{{ item.conclusion_id }}</span>
+                  <span class="archive-card-title">{{ item.title }}</span>
+                  <span class="archive-badge" :class="badgeClass(item.status)">{{ item.status }}</span>
+                  <span class="archive-meta" v-if="item.confidence">置信度 {{ item.confidence }}</span>
+                  <span class="archive-meta" v-if="item.last_change_id">最近变化 {{ item.last_change_id }}</span>
+                </div>
+                <p class="archive-text">{{ item.statement }}</p>
+                <div class="archive-meta" v-if="refLabels(item)">依据：{{ refLabels(item) }}</div>
+              </div>
+              <p class="archive-empty" v-if="!archiveConclusions.length">暂无记录</p>
+            </section>
+
+            <section class="archive-section" v-show="archiveSection === 'facts'">
+              <div class="archive-fact-group" v-for="group in archiveFactGroups" :key="group.type">
+                <h3 class="archive-group-title">{{ group.type }}</h3>
+                <div class="archive-card" v-for="fact in group.items" :key="fact.fact_id">
+                  <div class="archive-card-head">
+                    <span class="archive-id">{{ fact.fact_id }}</span>
+                    <span class="archive-badge" :class="badgeClass(fact.verification_status)">{{ fact.verification_status }}</span>
+                    <span class="archive-meta" v-if="fact.report_period">{{ fact.report_period }}</span>
+                    <a
+                      class="archive-fact-link"
+                      v-if="fact.source_url"
+                      :href="fact.source_url"
+                      target="_blank"
+                      rel="noreferrer"
+                    >来源 ↗</a>
+                  </div>
+                  <p class="archive-text">{{ fact.content }}</p>
+                  <table class="metrics" v-if="fact.metrics && fact.metrics.length">
+                    <thead><tr><th>指标</th><th>数值</th><th>单位</th><th>同比</th></tr></thead>
+                    <tbody>
+                      <tr v-for="(metric, metricIndex) in fact.metrics" :key="metricIndex">
+                        <td>{{ metric.name }}</td>
+                        <td>{{ metric.value }}</td>
+                        <td>{{ metric.unit }}</td>
+                        <td>{{ metric.yoy }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <div class="archive-meta" v-if="fact.source_locator">位置：{{ fact.source_locator }}</div>
+                </div>
+              </div>
+              <p class="archive-empty" v-if="!archiveFactGroups.length">暂无记录</p>
+            </section>
+
+            <section class="archive-section" v-show="archiveSection === 'hypotheses'">
+              <div class="archive-card" v-for="item in archiveDetail.hypotheses" :key="item.hypothesis_id">
+                <div class="archive-card-head">
+                  <span class="archive-id">{{ item.hypothesis_id }}</span>
+                  <span class="archive-badge" :class="badgeClass(item.status)">{{ item.status }}</span>
+                  <span class="archive-badge" :class="badgeClass(item.confidence)">{{ item.confidence }}</span>
+                  <span class="archive-meta" v-if="item.next_review_date">复核 {{ item.next_review_date }}</span>
+                </div>
+                <p class="archive-text">{{ item.statement }}</p>
+                <dl class="archive-fields">
+                  <div><dt>验证方法</dt><dd>{{ item.verification_method }}</dd></div>
+                  <div><dt>证伪条件</dt><dd>{{ item.falsification_condition }}</dd></div>
+                </dl>
+              </div>
+              <p class="archive-empty" v-if="!archiveDetail.hypotheses.length">暂无记录</p>
+            </section>
+
+            <section class="archive-section" v-show="archiveSection === 'changes'">
+              <div class="archive-card archive-change" v-for="item in archiveDetail.changes" :key="item.change_id">
+                <div class="archive-card-head">
+                  <span class="archive-id">{{ item.change_id }}</span>
+                  <span class="archive-badge" :class="badgeClass(item.operation)">{{ item.operation }}</span>
+                  <span class="archive-meta">{{ item.trigger_date }}</span>
+                  <span class="archive-change-line">{{ item.from_conclusion_id }} → {{ item.to_conclusion_id }}</span>
+                </div>
+                <p class="archive-text">{{ item.old_conclusion }} → {{ item.new_conclusion }}</p>
+                <div class="archive-meta">触发：{{ item.trigger_event }}</div>
+                <div class="archive-meta" v-if="item.evidence_ids && item.evidence_ids.length">依据：{{ item.evidence_ids.join("、") }}</div>
+                <div class="archive-meta">原因：{{ item.reason }} · 影响：{{ item.impact }}</div>
+                <div class="archive-meta" v-if="item.review_status">
+                  <span class="archive-badge" :class="badgeClass(item.review_status)">{{ item.review_status }}</span>
+                </div>
+              </div>
+              <p class="archive-empty" v-if="!archiveDetail.changes.length">暂无记录</p>
+            </section>
+
+            <section class="archive-section" v-show="archiveSection === 'questions'">
+              <div class="archive-question-group" v-for="group in archiveQuestionGroups" :key="group.importance">
+                <h3 class="archive-group-title">{{ group.importance }}优先级</h3>
+                <div class="archive-card" v-for="item in group.items" :key="item.question_id">
+                  <div class="archive-card-head">
+                    <span class="archive-id">{{ item.question_id }}</span>
+                    <span class="archive-badge" :class="badgeClass(item.status)">{{ item.status }}</span>
+                    <span class="archive-badge" :class="badgeClass(item.importance)">{{ item.importance }}</span>
+                    <span class="archive-meta" v-if="item.last_checked_at">上次检查 {{ item.last_checked_at }}</span>
+                  </div>
+                  <p class="archive-text">{{ item.question }}</p>
+                  <dl class="archive-fields">
+                    <div v-if="item.known_facts && item.known_facts.length"><dt>已知事实</dt><dd>{{ item.known_facts.join("、") }}</dd></div>
+                    <div><dt>缺的证据</dt><dd>{{ item.missing_evidence }}</dd></div>
+                    <div><dt>下一步</dt><dd>{{ item.next_action }}</dd></div>
+                    <div><dt>解决标准</dt><dd>{{ item.resolution_criteria }}</dd></div>
+                    <div v-if="item.resolution_note"><dt>解决说明</dt><dd>{{ item.resolution_note }}</dd></div>
+                  </dl>
+                </div>
+              </div>
+              <p class="archive-empty" v-if="!archiveQuestionGroups.length">暂无记录</p>
+            </section>
+          </template>
+        </div>
+      </template>
     </section>
     <div class="drop-hint" v-if="dragging">
       <div class="drop-card">松开 → 在右侧打开这段对话</div>
