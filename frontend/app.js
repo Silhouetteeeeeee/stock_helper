@@ -82,6 +82,139 @@ function shortDate(value) {
   return sameYear ? md : `${date.getFullYear()}-${md}`;
 }
 
+// 依据里常见的字段名，翻译成人话；没登记的原样显示
+const EVIDENCE_LABELS = {
+  code: "代码", name: "名称", company: "公司", industry: "行业", profile: "简介",
+  period: "报告期", as_of: "数据日期", report: "报表", qdate: "报告季度",
+  datatype: "报表类型", revenue_yi: "营业收入(亿)", revenue_yoy: "营收同比(%)",
+  revenue_sq_yi: "单季营收(亿)", revenue_sq_yoy: "单季营收同比(%)",
+  net_profit_yi: "净利润(亿)", net_profit_yoy: "净利润同比(%)",
+  net_profit_sq_yi: "单季净利润(亿)", net_profit_sq_yoy: "单季净利润同比(%)",
+  gross_margin: "毛利率(%)", gross_margin_sq: "单季毛利率(%)", net_margin: "净利率(%)",
+  roe: "ROE(%)", roa: "ROA(%)", debt_ratio: "资产负债率(%)",
+  pe_ttm: "市盈率TTM", pb_mrq: "市净率MRQ", price: "股价", market_cap_yi: "总市值(亿)",
+  pe_percentile: "PE分位(%)", pb_percentile: "PB分位(%)", years: "年数", span: "区间",
+  income_yi: "收入(亿)", share: "占比(%)", ratio: "比例(%)", rank: "排名",
+  date: "日期", title: "标题", tags: "标签", level: "级别", latest: "最新",
+  events: "事件", count: "数量", groups: "分组", items: "明细", slices: "构成",
+  total_income_yi: "合计收入(亿)", kind: "类别", label: "类别", controller: "实控人",
+  top10: "前十大股东", has_dividends: "有分红", has_buybacks: "有回购",
+  has_reports: "有研报", has_forecasts: "有预告", has_pledges: "有质押",
+  has_lockups: "有解禁", has_trades: "有增减持", has_research: "有调研",
+  plan: "方案", report_date: "报告期", fiscal_year: "年度", period_label: "报告类型",
+  dividend_yield: "股息率(%)", payout_ratio: "分红率(%)", amount_yi: "金额(亿)",
+  revenue: "营收", net_profit: "净利润", eps: "EPS", bps: "BPS", cash: "现金",
+  stale: "缓存偏旧", cached: "复用缓存", mode: "模式", valuation: "估值",
+  financials: "财务", scenarios: "情景", assumptions: "假设", base_value: "基准值",
+  base_label: "基准", growth_pct: "增速假设(%)", exit_pe: "退出PE",
+  salary_total_wan: "薪酬合计(万)", window_start: "窗口开始", window_end: "窗口结束",
+  days: "天数", has_related: "有相关交易", segments: "业务构成", index: "指数",
+  close: "收盘", change_pct: "涨跌幅(%)", amount: "数量", value: "值",
+};
+
+function evidenceText(value) {
+  if (value === null || value === undefined) return "--";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return String(value);
+    return Number.isInteger(value) ? String(value) : String(Math.round(value * 100) / 100);
+  }
+  if (typeof value === "boolean") return value ? "是" : "否";
+  return String(value);
+}
+
+// 依据数据：值、对象、对象数组分别显示成字段行、嵌套块和表格
+const EvidenceView = {
+  name: "EvidenceView",
+  props: {
+    value: { default: null },
+    depth: { type: Number, default: 0 },
+  },
+  computed: {
+    isObject() {
+      return !!this.value && typeof this.value === "object" && !Array.isArray(this.value);
+    },
+    isArray() {
+      return Array.isArray(this.value);
+    },
+    entries() {
+      if (!this.isObject) return [];
+      return Object.entries(this.value)
+        .filter(([, value]) => {
+          if (value === null || value === undefined || value === "") return false;
+          return !(Array.isArray(value) && !value.length);
+        })
+        .map(([key, value]) => ({ key, value }));
+    },
+    rows() {
+      return this.isArray ? this.value : [];
+    },
+    tableHeaders() {
+      if (!this.isArray) return [];
+      const keys = [];
+      this.value.forEach((row) => {
+        if (!row || typeof row !== "object" || Array.isArray(row)) return;
+        Object.keys(row).forEach((key) => {
+          if (!keys.includes(key) && keys.length < 8) keys.push(key);
+        });
+      });
+      return keys;
+    },
+    isTable() {
+      if (!this.isArray || !this.value.length || !this.tableHeaders.length) return false;
+      return this.value.every((row) =>
+        row && typeof row === "object" && !Array.isArray(row) &&
+        this.tableHeaders.every((key) => row[key] === null || typeof row[key] !== "object")
+      );
+    },
+  },
+  methods: {
+    label(key) {
+      return EVIDENCE_LABELS[key] || key;
+    },
+    text: evidenceText,
+    isComplex(value) {
+      return value !== null && typeof value === "object";
+    },
+    summary(value) {
+      if (Array.isArray(value)) return `${value.length} 项`;
+      return `${Object.keys(value || {}).length} 个字段`;
+    },
+    cell(row, key) {
+      return evidenceText(row[key]);
+    },
+  },
+  template: `
+    <div class="ev">
+      <template v-if="isObject">
+        <div class="ev-row" v-for="entry in entries" :key="entry.key">
+          <span class="ev-key">{{ label(entry.key) }}</span>
+          <details class="ev-more" v-if="isComplex(entry.value)" :open="depth === 0">
+            <summary>{{ summary(entry.value) }}</summary>
+            <evidence-view :value="entry.value" :depth="depth + 1"></evidence-view>
+          </details>
+          <span class="ev-val" v-else>{{ text(entry.value) }}</span>
+        </div>
+      </template>
+      <table class="ev-table" v-else-if="isTable">
+        <thead>
+          <tr><th v-for="key in tableHeaders" :key="key">{{ label(key) }}</th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="(row, index) in rows" :key="index">
+            <td v-for="key in tableHeaders" :key="key">{{ cell(row, key) }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <template v-else-if="isArray">
+        <div class="ev-item" v-for="(item, index) in value" :key="index">
+          <evidence-view :value="item" :depth="depth + 1"></evidence-view>
+        </div>
+      </template>
+      <span class="ev-val" v-else>{{ text(value) }}</span>
+    </div>
+  `,
+};
+
 // ---------------------------------------------------------------------------
 // 一个对话栏：会话、消息、流式回答、输入框全部自己持有。
 // 两栏各自是独立的滚动容器和请求，互不等待，也互不撑高。
@@ -374,7 +507,7 @@ const ChatPane = {
     // 来源详情放在页面最右侧的全局侧栏里，这里只负责把点击转给页面
     requestSource(message, index) {
       this.hideTip();
-      this.$emit("open-source", message, index);
+      this.$emit("open-source", message, index, this.cid);
     },
     traceOf(message) {
       const steps = Array.isArray(message.trace) ? message.trace : [];
@@ -472,7 +605,7 @@ const ChatPane = {
 // 页面：左边常驻一个对话栏，右边按需再开一个。
 // ---------------------------------------------------------------------------
 createApp({
-  components: { ChatPane },
+  components: { ChatPane, EvidenceView },
   data() {
     return {
       conversations: [],
@@ -484,6 +617,8 @@ createApp({
       dragging: false,
       resizing: false,
       sourceView: null,
+      evidence: null,
+      evidenceState: "idle",
     };
   },
   computed: {
@@ -502,6 +637,24 @@ createApp({
     },
     rightStyle() {
       return { flex: "1 1 auto", minWidth: 0 };
+    },
+    hasEvidenceData() {
+      if (!this.evidence) return false;
+      const value = this.evidence.data;
+      if (value === null || value === undefined) return false;
+      if (Array.isArray(value)) return value.length > 0;
+      if (typeof value === "object") return Object.keys(value).length > 0;
+      return value !== "";
+    },
+    evidenceJson() {
+      if (!this.hasEvidenceData) return "";
+      let text = "";
+      try {
+        text = JSON.stringify(this.evidence.data, null, 2);
+      } catch (error) {
+        return "";
+      }
+      return text.length > 12000 ? `${text.slice(0, 12000)}\n…（已截断）` : text;
     },
   },
   methods: {
@@ -548,11 +701,12 @@ createApp({
     },
 
     // ---------------- 来源详情侧栏（页面最右侧） ----------------
-    openSource(message, index) {
+    openSource(message, index, cid) {
       const sources = (message && message.sources) || [];
       const source = sources[index];
       if (!source) return;
       const id = String(source.id || "");
+      if (cid !== undefined) this.sourceCid = cid;
       this.sourceMsg = message;
       this.sourceIndex = index;
       this.sourceView = {
@@ -565,43 +719,51 @@ createApp({
         fetched: source.fetched_at || "",
         url: source.url || "",
         id,
-        occurrences: this.citationSnippets(message, id, index + 1),
         steps: this.sourceSteps(message, id),
       };
+      this.loadEvidence();
     },
     stepSource(delta) {
       if (!this.sourceMsg) return;
       const next = this.sourceIndex + delta;
       const total = (this.sourceMsg.sources || []).length;
       if (next < 0 || next >= total) return;
-      this.openSource(this.sourceMsg, next);
+      this.openSource(this.sourceMsg, next, this.sourceCid);
     },
     closeSource() {
       this.sourceView = null;
       this.sourceMsg = null;
       this.sourceIndex = -1;
+      this.sourceCid = null;
+      this.evidence = null;
+      this.evidenceState = "idle";
+      this.evidenceToken = (this.evidenceToken || 0) + 1;
     },
-    // 回答里引用这条来源的原句：截取角标附近的一段，角标换成 [n]
-    citationSnippets(message, id, number) {
-      const marker = `[[${id}]]`;
-      const text = String(message.text || "");
-      const seen = new Set();
-      const snippets = [];
-      text.split(/\n+/).forEach((raw) => {
-        const para = raw.trim();
-        const at = para.indexOf(marker);
-        if (at < 0) return;
-        const start = Math.max(0, at - 100);
-        const end = Math.min(para.length, at + marker.length + 100);
-        const snippet = `${start > 0 ? "…" : ""}${para.slice(start, end)}${end < para.length ? "…" : ""}`
-          .replace(/\[\[([^\[\]]+)\]\]/g, (match) => (match === marker ? `[${number}]` : ""))
-          .replace(/\s+/g, " ")
-          .trim();
-        if (!snippet || seen.has(snippet)) return;
-        seen.add(snippet);
-        snippets.push(snippet);
-      });
-      return snippets.slice(0, 4);
+    // 依据不是回答里的原句，而是这次工具调用真正取回来的数据
+    async loadEvidence() {
+      const token = (this.evidenceToken || 0) + 1;
+      this.evidenceToken = token;
+      this.evidence = null;
+      const sourceId = this.sourceView && this.sourceView.id;
+      const cid = this.sourceCid;
+      if (!sourceId || !cid) {
+        this.evidenceState = "missing";
+        return;
+      }
+      this.evidenceState = "loading";
+      try {
+        const response = await fetch(
+          `/api/conversations/${cid}/evidence?source_id=${encodeURIComponent(sourceId)}`
+        );
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        if (token !== this.evidenceToken) return;
+        this.evidence = data.evidence || null;
+        this.evidenceState = this.evidence ? "ready" : "missing";
+      } catch (error) {
+        if (token !== this.evidenceToken) return;
+        this.evidenceState = "error";
+      }
     },
     // 哪次工具调用取回了这条来源；旧记录没有 trace 明细时为空
     sourceSteps(message, id) {

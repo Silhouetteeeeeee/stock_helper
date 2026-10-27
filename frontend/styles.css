@@ -795,16 +795,6 @@ details.trace[open] summary::before { transform: rotate(90deg); }
   color: var(--dim-2);
 }
 .sp-empty { margin: 0; color: var(--dim-2); font-size: 12.2px; line-height: 1.7; }
-.sp-cite {
-  margin: 0 0 8px;
-  padding: 2px 0 2px 12px;
-  border-left: 2px solid rgba(91, 140, 255, 0.4);
-  color: #b9c3d4;
-  font-size: 12.6px;
-  line-height: 1.7;
-  overflow-wrap: anywhere;
-}
-.sp-cite:last-child { margin-bottom: 0; }
 .sp-step { padding: 7px 0; border-bottom: 1px solid var(--line); }
 .sp-step:last-child { padding-bottom: 0; border-bottom: 0; }
 .sp-step-line { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
@@ -827,6 +817,89 @@ details.trace[open] summary::before { transform: rotate(90deg); }
   overflow-wrap: anywhere;
 }
 .sp-step-error { margin-top: 3px; color: #e59a95; font-size: 12px; overflow-wrap: anywhere; }
+
+/* 依据数据：字段行 / 表格 / 嵌套块 */
+.ev { margin-top: 2px; }
+.ev-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.05);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+.ev-row:last-child { border-bottom: 0; }
+.ev-key { flex: 0 0 104px; color: var(--dim); overflow-wrap: anywhere; }
+.ev-val {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: #e2e8f3;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.ev-more { flex: 1 1 auto; min-width: 0; }
+.ev-more > summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 11.5px;
+  color: var(--dim-2);
+}
+.ev-more > summary::-webkit-details-marker { display: none; }
+.ev-more > summary::before { content: "▸ "; }
+.ev-more[open] > summary::before { content: "▾ "; }
+.ev-more[open] > summary { margin-bottom: 3px; }
+.ev-more > .ev { margin-left: 4px; padding-left: 10px; border-left: 1px solid var(--line); }
+.ev-item { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.ev-item:last-child { border-bottom: 0; }
+.ev-item > .ev > .ev-row:first-child { padding-top: 0; }
+.ev-table {
+  width: 100%;
+  margin-top: 4px;
+  border-collapse: collapse;
+  font-size: 11.8px;
+  font-variant-numeric: tabular-nums;
+}
+.ev-table th {
+  padding: 5px 6px;
+  text-align: left;
+  font-weight: 500;
+  color: var(--dim-2);
+  border-bottom: 1px solid var(--line);
+}
+.ev-table td {
+  padding: 5px 6px;
+  color: #d5dce8;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  overflow-wrap: anywhere;
+}
+.ev-table tr:last-child td { border-bottom: 0; }
+.ev-error {
+  margin: 0 0 8px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: rgba(224, 108, 100, 0.08);
+  color: #e59a95;
+  font-size: 12.2px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.ev-raw { margin-top: 10px; }
+.ev-raw > summary { cursor: pointer; font-size: 11.5px; color: var(--dim-2); }
+.ev-raw > pre {
+  margin: 8px 0 0;
+  padding: 10px;
+  max-height: 280px;
+  overflow: auto;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.22);
+  color: #b9c3d4;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 /* ---------------- 滚动条 ---------------- */
 .scroll::-webkit-scrollbar, .recent::-webkit-scrollbar, .side::-webkit-scrollbar, .source-side-body::-webkit-scrollbar { width: 10px; }

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>投资助手</title>
 <!-- 改样式或脚本后把 v 加一，避免浏览器继续用旧缓存 -->
-<link rel="stylesheet" href="/styles.css?v=20261027" />
+<link rel="stylesheet" href="/styles.css?v=20261027b" />
 </head>
 <body>
 <div id="app" v-cloak>
@@ -98,9 +98,19 @@
       <a class="sp-link" v-if="sourceView.url" :href="sourceView.url" target="_blank" rel="noreferrer">打开原文 ↗</a>
 
       <section class="sp-sec">
-        <h3>回答里的引用</h3>
-        <p class="sp-empty" v-if="!sourceView.occurrences.length">这段回答没有直接引用这条来源。</p>
-        <blockquote class="sp-cite" v-for="(line, lineIndex) in sourceView.occurrences" :key="lineIndex">{{ line }}</blockquote>
+        <h3>数据依据</h3>
+        <p class="sp-empty" v-if="evidenceState === 'loading'"><span class="pulse"></span>正在读取取数结果…</p>
+        <p class="sp-empty" v-else-if="evidenceState === 'error'">依据读取失败，稍后再试。</p>
+        <p class="sp-empty" v-else-if="evidenceState === 'missing'">这段对话里没找到这条来源的取数结果（旧对话可能没有保存明细）。</p>
+        <template v-else-if="evidence">
+          <div class="ev-error" v-if="evidence.ok === false">{{ evidence.error || "这次取数失败了" }}</div>
+          <evidence-view v-if="hasEvidenceData" :value="evidence.data"></evidence-view>
+          <p class="sp-empty" v-else-if="evidence.ok !== false">这次取数没有返回数据。</p>
+          <details class="ev-raw" v-if="evidenceJson">
+            <summary>原始 JSON</summary>
+            <pre>{{ evidenceJson }}</pre>
+          </details>
+        </template>
       </section>
 
       <section class="sp-sec">
@@ -264,6 +274,6 @@
 <script src="/assets/vue.global.prod.js"></script>
 <script src="/assets/marked.umd.js"></script>
 <script src="/assets/purify.min.js"></script>
-<script src="/app.js?v=20261027"></script>
+<script src="/app.js?v=20261027b"></script>
 </body>
 </html>

@@ -233,6 +233,34 @@ async def conversations(request):
     ])
 
 
+def evidence_for(cid: int, source_id: str) -> dict | None:
+    """在已保存的原始工具消息里找回这条来源对应的取数结果。
+
+    工具消息本身就带着完整 data 和 sources，回放时按来源 id 扫一遍即可；
+    同一来源被重复取过时取最后一次（前面的可能已被替换成缓存 stub）。
+    """
+    found = None
+    for message in STORE.messages(cid):
+        if message.get("role") != "assistant":
+            continue
+        for item in message.get("raw") or []:
+            if item.get("role") != "tool":
+                continue
+            try:
+                content = json.loads(item.get("content") or "{}")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(content, dict):
+                continue
+            sources = content.get("sources") or []
+            if any(
+                isinstance(source, dict) and str(source.get("id") or "") == source_id
+                for source in sources
+            ):
+                found = content
+    return found
+
+
 def clean_message(message: dict) -> dict:
     role = message.get("role")
     out = {"role": role, "text": message.get("text", "")}
@@ -269,6 +297,20 @@ async def conversation(request):
     })
 
 
+async def source_evidence(request):
+    """来源详情侧栏的「依据」：这条来源对应的工具返回的完整数据。"""
+    cid = int(request.path_params["cid"])
+    source_id = (request.query_params.get("source_id") or "").strip()
+    if not source_id:
+        return JSONResponse({"error": "missing source_id"}, status_code=400)
+    if meta_for(cid) is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse({
+        "source_id": source_id,
+        "evidence": evidence_for(cid, source_id),
+    })
+
+
 async def delete_conversation(request):
     cid = int(request.path_params["cid"])
     STORE.delete(cid)
@@ -297,6 +339,7 @@ app = Starlette(routes=[
     Route("/health", health),
     Route("/api/conversations", conversations),
     Route("/api/conversations/{cid:int}", conversation),
+    Route("/api/conversations/{cid:int}/evidence", source_evidence),
     Route("/api/conversations/{cid:int}/delete", delete_conversation, methods=["POST"]),
     Route("/api/ask", ask, methods=["POST"]),
     # 页面与静态资源放最后：前面的 API 路由先匹配，剩下的都交给 frontend/
