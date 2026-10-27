@@ -16,7 +16,7 @@ def test_catalog() -> None:
         "business_model", "moat", "operating_history", "financial_safety",
         "growth_outlook", "management", "valuation", "margin_of_safety",
         "market_view", "news_events", "sector_rotation", "stock_screening",
-        "strategy_risk", "review_eval",
+        "strategy_risk", "review_eval", "research_memory",
     ]
     assert all(item["description"] for item in items)
     assert all(item["title"] for item in items)
@@ -228,6 +228,14 @@ def test_unknown_skill() -> None:
     assert get_skill(None) is None
 
 
+def test_research_memory_skill() -> None:
+    skill = get_skill("research_memory")
+    assert skill is not None
+    text = skill.instructions
+    for phrase in ("已验证事实", "待验证假设", "结论变化", "未决问题", "维持", "证伪"):
+        assert phrase in text, phrase
+
+
 def main() -> None:
     test_catalog()
     test_business_model_skill()
@@ -244,6 +252,7 @@ def main() -> None:
     test_stock_screening_skill()
     test_strategy_risk_skill()
     test_review_eval_skill()
+    test_research_memory_skill()
     test_unknown_skill()
     print("PASS")
     sys.stdout.flush()

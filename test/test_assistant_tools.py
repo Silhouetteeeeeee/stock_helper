@@ -154,6 +154,8 @@ def test_schemas() -> None:
         "get_market_overview", "get_news_events", "get_sector_rotation",
         "screen_candidates", "build_strategy_plan", "save_daily_judgment",
         "review_research_reports",
+        "list_research_memory", "read_research_memory", "append_research_record",
+        "update_research_record", "record_conclusion_change",
     ], names
     for item in tools.schemas():
         assert item["type"] == "function"
@@ -447,7 +449,7 @@ def test_load_skill_tool() -> None:
         "business_model", "moat", "operating_history", "financial_safety",
         "growth_outlook", "management", "valuation", "margin_of_safety",
         "market_view", "news_events", "sector_rotation", "stock_screening",
-        "strategy_risk", "review_eval",
+        "strategy_risk", "review_eval", "research_memory",
     ]
 
 

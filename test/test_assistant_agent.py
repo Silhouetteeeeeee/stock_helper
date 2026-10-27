@@ -329,6 +329,8 @@ def test_prompt_is_skill_based() -> None:
     assert "stock_screening" in SYSTEM_PROMPT
     assert "screen_candidates" in SYSTEM_PROMPT
     assert "strategy_risk" in SYSTEM_PROMPT
+    assert "research_memory" in SYSTEM_PROMPT
+    assert "事实" in SYSTEM_PROMPT and "推测" in SYSTEM_PROMPT
     assert "build_strategy_plan" in SYSTEM_PROMPT
     assert "review_eval" in SYSTEM_PROMPT
     assert "review_research_reports" in SYSTEM_PROMPT

@@ -54,6 +54,7 @@ from stock.valuation import build_valuation
 
 from .company_profile import build_profile
 from .models import Source, ToolResult
+from .research_memory import MemoryError, default_store
 from .skills import catalog, get_skill
 from .valuation_math import (
     ValuationInputError,
@@ -796,6 +797,215 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_research_memory",
+            "description": "查看当前公司是否已有研究档案，返回名称、最后复核时间与各模块计数。",
+            "parameters": {
+                "type": "object",
+                "properties": {"company": _COMPANY},
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_research_memory",
+            "description": "读取公司研究档案的某一模块，可按记录编号或状态过滤。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "company": _COMPANY,
+                    "section": {
+                        "type": "string",
+                        "enum": ["facts", "hypotheses", "conclusions", "changes", "questions"],
+                    },
+                    "record_id": {
+                        "type": "string",
+                        "description": "记录编号，如 F001/H001/G001/C001/Q001；省略则返回该模块记录",
+                    },
+                    "status": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+                    "offset": {"type": "integer", "minimum": 0},
+                },
+                "required": ["section"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "append_research_record",
+            "description": "向研究档案追加事实、假设、结论或未决问题；结论变化不能由此写入。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "company": _COMPANY,
+                    "section": {
+                        "type": "string",
+                        "enum": ["facts", "hypotheses", "questions", "conclusions"],
+                    },
+                    "record": {
+                        "type": "object",
+                        "properties": {
+                            "subject": {"type": "string"},
+                            "fact_type": {"type": "string"},
+                            "content": {"type": "string"},
+                            "metrics": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "value": {"type": "number"},
+                                        "unit": {"type": "string"},
+                                        "yoy": {"type": "number"},
+                                    },
+                                    "required": ["name"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                            "report_period": {"type": "string"},
+                            "published_at": {"type": "string"},
+                            "source_id": {"type": "string"},
+                            "source_label": {"type": "string"},
+                            "source_locator": {"type": "string"},
+                            "source_url": {"type": "string"},
+                            "verification_status": {
+                                "type": "string",
+                                "enum": ["已核验", "待核验"],
+                            },
+                            "statement": {"type": "string"},
+                            "supporting_fact_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "assumptions": {"type": "string"},
+                            "confidence": {"type": "string", "enum": ["低", "中", "高"]},
+                            "verification_method": {"type": "string"},
+                            "falsification_condition": {"type": "string"},
+                            "status": {"type": "string"},
+                            "next_review_date": {"type": "string"},
+                            "title": {"type": "string"},
+                            "based_on_fact_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "based_on_hypothesis_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "question": {"type": "string"},
+                            "importance": {"type": "string", "enum": ["高", "中", "低"]},
+                            "known_facts": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "missing_evidence": {"type": "string"},
+                            "next_action": {"type": "string"},
+                            "resolution_criteria": {"type": "string"},
+                            "related_hypothesis_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "resolution_note": {"type": "string"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                "required": ["section", "record"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_research_record",
+            "description": "更新已有记录的状态类字段（事实核验状态、假设状态、问题状态等）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "company": _COMPANY,
+                    "section": {
+                        "type": "string",
+                        "enum": ["facts", "hypotheses", "questions"],
+                    },
+                    "record_id": {"type": "string"},
+                    "patch": {
+                        "type": "object",
+                        "properties": {
+                            "verification_status": {
+                                "type": "string",
+                                "enum": ["已核验", "待核验"],
+                            },
+                            "source_locator": {"type": "string"},
+                            "source_url": {"type": "string"},
+                            "status": {"type": "string"},
+                            "confidence": {"type": "string", "enum": ["低", "中", "高"]},
+                            "next_review_date": {"type": "string"},
+                            "last_checked_at": {"type": "string"},
+                            "resolution_note": {"type": "string"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                "required": ["section", "record_id", "patch"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "record_conclusion_change",
+            "description": (
+                "记录一次结论变化（补充/修正/推翻/维持）；历史只追加，不能修改。"
+                "old_conclusion 必须与档案中的当前结论完全一致。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "company": _COMPANY,
+                    "conclusion_id": {"type": "string", "description": "现有结论编号，如 G001"},
+                    "operation": {
+                        "type": "string",
+                        "enum": ["补充", "修正", "推翻", "维持"],
+                    },
+                    "old_conclusion": {"type": "string"},
+                    "new_conclusion": {"type": "string"},
+                    "new_title": {"type": "string", "description": "推翻时新结论的标题"},
+                    "trigger_event": {"type": "string"},
+                    "trigger_date": {"type": "string"},
+                    "evidence_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "事实或假设编号，如 F001/H001",
+                    },
+                    "reason": {"type": "string"},
+                    "impact": {"type": "string"},
+                    "review_status": {"type": "string"},
+                    "confidence": {"type": "string", "enum": ["低", "中", "高"]},
+                    "based_on_fact_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "based_on_hypothesis_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": [
+                    "conclusion_id", "operation", "old_conclusion", "new_conclusion",
+                    "trigger_event", "trigger_date", "evidence_ids", "reason", "impact",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 
@@ -959,6 +1169,8 @@ def run_tool(
         if code is None:
             return ToolResult(ok=False, error=error or "无法识别公司")
 
+        if name in MEMORY_TOOLS:
+            return _research_memory_tool(name, code, arguments)
         if name == "get_company_profile":
             return _company_profile(code)
         if name == "get_finance":
@@ -999,6 +1211,134 @@ def run_tool(
             return _calc_valuation(code, arguments)
         return ToolResult(ok=False, company=code, error=f"未知工具：{name}")
     except Exception as error:  # noqa: BLE001 - 数据层异常统一交给模型处理
+        return ToolResult(ok=False, company=code, error=str(error))
+
+
+MEMORY_TOOLS = frozenset({
+    "list_research_memory",
+    "read_research_memory",
+    "append_research_record",
+    "update_research_record",
+    "record_conclusion_change",
+})
+
+_MEMORY_SECTIONS = {
+    "facts": ("事实", "fact_id"),
+    "hypotheses": ("假设", "hypothesis_id"),
+    "conclusions": ("结论", "conclusion_id"),
+    "changes": ("变化", "change_id"),
+    "questions": ("问题", "question_id"),
+}
+
+
+def _memory_as_of(section: str, record: dict) -> str:
+    if section == "facts":
+        value = record.get("report_period") or record.get("published_at") or ""
+    elif section == "hypotheses":
+        value = record.get("next_review_date") or record.get("updated_at") or ""
+    elif section == "changes":
+        value = record.get("trigger_date") or ""
+    elif section == "questions":
+        value = record.get("last_checked_at") or record.get("created_at") or ""
+    else:
+        value = record.get("updated_at") or ""
+    return str(value)[:10]
+
+
+def _memory_source(code: str, section: str, record: dict, fetched: str) -> Source:
+    label, field = _MEMORY_SECTIONS[section]
+    record_id = str(record.get(field) or "")
+    return Source(
+        id=f"memory:{code}:{record_id}",
+        label="研究档案",
+        detail=f"{label} {record_id}",
+        as_of=_memory_as_of(section, record),
+        fetched_at=fetched,
+    )
+
+
+def _research_memory_tool(name: str, code: str, arguments: dict) -> ToolResult:
+    store = default_store()
+    fetched = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        if name == "list_research_memory":
+            summary = store.company(code)
+            if summary is None:
+                return ToolResult(ok=True, company=code, data={
+                    "code": code, "archive": False, "message": "尚未建档",
+                })
+            source = Source(
+                id=f"memory:{code}:index",
+                label="研究档案",
+                detail=f"{summary['name']} 的档案索引",
+                as_of=str(summary.get("updated_at") or "")[:10],
+                fetched_at=fetched,
+            )
+            return ToolResult(
+                ok=True, company=code, sources=(source,),
+                data={"code": code, "archive": True, **summary},
+            )
+
+        if name == "read_research_memory":
+            result = store.read(
+                code,
+                str(arguments.get("section") or ""),
+                record_id=str(arguments.get("record_id") or ""),
+                status=str(arguments.get("status") or ""),
+                limit=int(arguments.get("limit") or 200),
+                offset=int(arguments.get("offset") or 0),
+            )
+            sources = tuple(
+                _memory_source(code, result["section"], record, fetched)
+                for record in result["records"]
+            )
+            return ToolResult(
+                ok=True, company=code, sources=sources, data=result,
+            )
+
+        if name == "append_research_record":
+            section = str(arguments.get("section") or "")
+            record = arguments.get("record")
+            stock = get_stock(code)
+            result = store.append(
+                code,
+                section,
+                record if isinstance(record, dict) else {},
+                name=stock.name if stock is not None else "",
+            )
+            source = _memory_source(code, section, result["record"], fetched)
+            return ToolResult(
+                ok=True, company=code, sources=(source,), data=result,
+            )
+
+        if name == "update_research_record":
+            section = str(arguments.get("section") or "")
+            patch = arguments.get("patch")
+            result = store.update(
+                code,
+                section,
+                str(arguments.get("record_id") or ""),
+                patch if isinstance(patch, dict) else {},
+            )
+            source = _memory_source(code, section, result["record"], fetched)
+            return ToolResult(
+                ok=True, company=code, sources=(source,), data=result,
+            )
+
+        payload = {
+            key: value for key, value in arguments.items() if key != "company"
+        }
+        result = store.record_change(code, payload)
+        change_id = result["change"]["change_id"]
+        source = Source(
+            id=f"memory:{code}:{change_id}",
+            label="研究档案",
+            detail=f"变化 {change_id}",
+            as_of=_memory_as_of("changes", result["change"]),
+            fetched_at=fetched,
+        )
+        return ToolResult(ok=True, company=code, sources=(source,), data=result)
+    except MemoryError as error:
         return ToolResult(ok=False, company=code, error=str(error))
 
 
