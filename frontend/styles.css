@@ -89,6 +89,27 @@ a { color: #8fb4ff; }
 }
 .new-btn:hover { background: rgba(91, 140, 255, 0.19); border-color: rgba(91, 140, 255, 0.55); }
 .new-btn .plus { font-size: 15px; line-height: 1; margin-top: -1px; }
+/* 研究档案入口：和「新对话」同高，次级样式 */
+.archive-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 36px;
+  margin-top: 6px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--dim);
+  font-size: 13px;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.archive-entry:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+  background: rgba(255, 255, 255, 0.04);
+}
+.archive-entry .count { font-size: 11px; color: var(--dim-2); }
 
 .side-sec { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; gap: 8px; }
 .side-head {
@@ -207,6 +228,82 @@ a { color: #8fb4ff; }
  */
 .main { position: relative; display: flex; min-width: 0; height: 100vh; overflow: hidden; }
 .panes { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; height: 100%; }
+
+/* 研究档案：只读的公司列表，占满对话区 */
+.archive-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  background: var(--bg);
+  overflow: hidden;
+}
+.archive-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.archive-back {
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--dim);
+  font-size: 12px;
+}
+.archive-back:hover { color: var(--text); border-color: var(--line-strong); }
+.archive-title { font-size: 15px; }
+.archive-search {
+  margin-left: auto;
+  width: 220px;
+  height: 31px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-deep);
+  color: var(--text);
+  font-size: 12.5px;
+  outline: none;
+}
+.archive-search:focus { border-color: rgba(91, 140, 255, 0.5); }
+.archive-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 12px 20px;
+  overflow-y: auto;
+}
+.archive-item {
+  display: grid;
+  grid-template-columns: minmax(90px, auto) 70px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text);
+  text-align: left;
+}
+.archive-item:hover {
+  border-color: var(--line-strong);
+  background: rgba(91, 140, 255, 0.08);
+}
+.archive-name { font-size: 13.5px; }
+.archive-code { font-size: 11.5px; color: var(--dim-2); }
+.archive-conclusion {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.archive-date { font-size: 11.5px; color: var(--dim-2); }
 
 .pane {
   position: relative;

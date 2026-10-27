@@ -226,8 +226,9 @@ const ChatPane = {
   template: "#pane-template",
   props: {
     secondary: { type: Boolean, default: false },
+    archiveCodes: { type: Array, default: () => [] },
   },
-  emits: ["state", "changed", "close", "open-source", "close-source"],
+  emits: ["state", "changed", "close", "open-source", "close-source", "open-archive"],
   data() {
     return {
       cid: null,
@@ -625,6 +626,14 @@ createApp({
       sourceResizing: false,
       evidence: null,
       evidenceState: "idle",
+      archiveOpen: false,
+      archiveList: [],
+      archiveDetail: null,
+      archiveCode: null,
+      archiveSection: "conclusions",
+      archiveLoading: false,
+      archiveError: "",
+      archiveQuery: "",
     };
   },
   computed: {
@@ -662,6 +671,18 @@ createApp({
       }
       return text.length > 12000 ? `${text.slice(0, 12000)}\n…（已截断）` : text;
     },
+    archiveCodes() {
+      return this.archiveList.map((item) => item.code);
+    },
+    filteredArchives() {
+      const needle = this.archiveQuery.trim().toLowerCase();
+      if (!needle) return this.archiveList;
+      return this.archiveList.filter((item) =>
+        [item.name, item.code, item.conclusion]
+          .filter(Boolean)
+          .some((text) => String(text).toLowerCase().includes(needle))
+      );
+    },
   },
   methods: {
     metaLine(item) {
@@ -674,12 +695,50 @@ createApp({
       return parts.join(" · ");
     },
 
+    shortDate,
+
     async refresh() {
+      const archives = this.loadArchives();
       try {
         const response = await fetch("/api/conversations");
         if (!response.ok) return;
         this.conversations = await response.json();
       } catch (error) { /* 列表失败不影响聊天 */ }
+      await archives;
+    },
+
+    // ---------------- 研究档案 ----------------
+    async loadArchives() {
+      try {
+        const response = await fetch("/api/research/companies");
+        if (!response.ok) return;
+        const data = await response.json();
+        this.archiveList = Array.isArray(data.companies) ? data.companies : [];
+      } catch (error) {
+        this.archiveList = [];
+      }
+    },
+    openArchive(code = "") {
+      this.closeSource();
+      this.archiveOpen = true;
+      if (!this.archiveList.length) this.loadArchives();
+      if (code) {
+        this.archiveCode = code;
+        this.loadArchiveDetail(code);
+      } else {
+        this.archiveCode = null;
+        this.archiveDetail = null;
+        this.archiveError = "";
+      }
+    },
+    closeArchive() {
+      this.archiveOpen = false;
+      this.archiveCode = null;
+      this.archiveDetail = null;
+      this.archiveError = "";
+    },
+    loadArchiveDetail(code) {
+      this.archiveCode = code;
     },
 
     // ---------------- 打开对话 ----------------

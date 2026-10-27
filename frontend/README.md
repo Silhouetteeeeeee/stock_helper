@@ -14,6 +14,8 @@
   放不下时在表格内部横向/纵向滚动，表头固定在顶部。
   依据数据由 `GET /api/conversations/{id}/evidence?source_id=...` 从已保存的
   工具消息里取回
+- 研究档案页只读，入口在左侧栏和对话栏标题；数据来自 `/api/research/companies`，
+  不会从页面写档案
 - `assets/`：第三方库，本地自带，不走 CDN
 
 第三方库版本：Vue 3.5.44（MIT）、marked 18.1.1（MIT）、DOMPurify 3.4.17（Apache-2.0 OR MPL-2.0）。

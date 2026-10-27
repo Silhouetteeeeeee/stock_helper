@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>投资助手</title>
 <!-- 改样式或脚本后把 v 加一，避免浏览器继续用旧缓存 -->
-<link rel="stylesheet" href="/styles.css?v=20261027d" />
+<link rel="stylesheet" href="/styles.css?v=20261027e" />
 </head>
 <body>
 <div id="app" v-cloak>
@@ -18,6 +18,9 @@
     <div class="side-resizer" :class="{ active: sideResizing }" @mousedown.prevent="startSideResize" title="拖动调整侧栏宽度"></div>
     <div class="brand"><span class="logo">研</span><span>投资助手</span></div>
     <button class="new-btn" @click="newChat"><span class="plus">+</span>新对话</button>
+    <button class="archive-entry" @click="openArchive()">
+      <span>研究档案</span><span class="count">{{ archiveList.length }}</span>
+    </button>
 
     <div class="side-sec">
       <div class="side-head"><span>最近对话</span><span class="count">{{ filteredConversations.length }}</span></div>
@@ -52,14 +55,16 @@
   </aside>
 
   <main class="main" @dragover.prevent @drop.prevent="onDrop">
-    <div class="panes" ref="panes">
+    <div class="panes" ref="panes" v-show="!archiveOpen">
       <chat-pane
         ref="leftPane"
         :style="leftStyle"
+        :archive-codes="archiveCodes"
         @state="onLeftState"
         @changed="refresh"
         @open-source="openSource"
         @close-source="closeSource"
+        @open-archive="openArchive"
       ></chat-pane>
       <div class="divider" v-if="splitOpen" :class="{ active: resizing }" @mousedown="startResize"></div>
       <chat-pane
@@ -67,13 +72,32 @@
         ref="rightPane"
         secondary
         :style="rightStyle"
+        :archive-codes="archiveCodes"
         @state="onRightState"
         @changed="refresh"
         @close="closeSplit"
         @open-source="openSource"
         @close-source="closeSource"
+        @open-archive="openArchive"
       ></chat-pane>
     </div>
+
+    <section class="archive-view" v-if="archiveOpen">
+      <header class="archive-head">
+        <button class="archive-back" @click="closeArchive">← 返回对话</button>
+        <span class="archive-title">研究档案</span>
+        <input class="archive-search" v-model="archiveQuery" placeholder="搜索公司或代码" />
+      </header>
+      <div class="archive-list">
+        <button class="archive-item" v-for="item in filteredArchives" :key="item.code" @click="openArchive(item.code)">
+          <span class="archive-name">{{ item.name }}</span>
+          <span class="archive-code">{{ item.code }}</span>
+          <span class="archive-conclusion">{{ item.conclusion || "尚无结论" }}</span>
+          <span class="archive-date">{{ shortDate(item.last_reviewed_at) || shortDate(item.updated_at) }}</span>
+        </button>
+        <div class="side-empty" v-if="!filteredArchives.length">还没有研究档案</div>
+      </div>
+    </section>
     <div class="drop-hint" v-if="dragging">
       <div class="drop-card">松开 → 在右侧打开这段对话</div>
     </div>
@@ -146,6 +170,12 @@
       </div>
       <div class="co muted" v-else>{{ secondary ? '分屏 · 未选择对话' : '未选择公司 · 直接在下面提问' }}</div>
       <div class="pane-tools">
+        <button
+          class="icon-btn"
+          v-if="activeCode && archiveCodes.includes(activeCode)"
+          title="研究档案"
+          @click="$emit('open-archive', activeCode)"
+        >档案</button>
         <button class="icon-btn" v-if="cid !== null" @click="deleteConversation" title="删除这个对话">删除</button>
         <button class="icon-btn close" v-if="secondary" @click="$emit('close')" title="关闭分屏">✕</button>
       </div>
@@ -280,6 +310,6 @@
 <script src="/assets/vue.global.prod.js"></script>
 <script src="/assets/marked.umd.js"></script>
 <script src="/assets/purify.min.js"></script>
-<script src="/app.js?v=20261027d"></script>
+<script src="/app.js?v=20261027e"></script>
 </body>
 </html>
