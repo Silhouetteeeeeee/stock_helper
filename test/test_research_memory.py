@@ -154,6 +154,117 @@ def test_concurrent_appends_keep_all_records() -> None:
         assert store.company("605499")["counts"]["facts"] == 40
 
 
+HYPOTHESIS = {
+    "statement": "全国市场扩张能够继续推动收入增长",
+    "supporting_fact_ids": ["F001"],
+    "assumptions": "渠道扩张不显著推高销售费用",
+    "confidence": "中",
+    "verification_method": "观察分区域收入增速、渠道覆盖和销售费用率",
+    "falsification_condition": "新增区域增长持续放缓，且销售费用增长明显超过收入",
+    "status": "待验证",
+    "next_review_date": "2026-12-31",
+}
+
+QUESTION = {
+    "question": "经营现金流为什么落后于净利润增长？",
+    "importance": "高",
+    "known_facts": ["F001"],
+    "missing_evidence": "应收、存货、应付与合同负债的完整拆解",
+    "next_action": "查现金流量表、资产负债表及相关附注",
+    "resolution_criteria": "能用财务数据解释主要差异",
+    "related_hypothesis_ids": [],
+    "status": "待处理",
+}
+
+
+def test_hypothesis_requires_falsification_and_fact_refs() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        store = fresh_store(folder)
+        store.append("605499", "facts", FACT)
+        result = store.append("605499", "hypotheses", HYPOTHESIS)
+        assert result["record"]["hypothesis_id"] == "H001"
+
+        broken = dict(HYPOTHESIS)
+        broken.pop("falsification_condition")
+        try:
+            store.append("605499", "hypotheses", broken)
+        except MemoryError:
+            pass
+        else:
+            raise AssertionError("缺少证伪条件应被拒绝")
+
+        broken = dict(HYPOTHESIS, supporting_fact_ids=["F999"])
+        try:
+            store.append("605499", "hypotheses", broken)
+        except MemoryError:
+            pass
+        else:
+            raise AssertionError("引用不存在的事实应被拒绝")
+
+
+def test_question_and_baseline_conclusion() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        store = fresh_store(folder)
+        store.append("605499", "facts", FACT)
+        store.append("605499", "hypotheses", HYPOTHESIS)
+        question = store.append("605499", "questions", QUESTION)
+        assert question["record"]["question_id"] == "Q001"
+
+        conclusion = store.append("605499", "conclusions", {
+            "title": "增长来源",
+            "statement": "增长由核心单品与电解质饮料共同驱动",
+            "confidence": "中",
+            "based_on_fact_ids": ["F001"],
+            "based_on_hypothesis_ids": ["H001"],
+        })
+        assert conclusion["record"]["conclusion_id"] == "G001"
+        assert conclusion["record"]["status"] == "有效"
+        assert store.company("605499")["counts"]["conclusions"] == 1
+
+        page = store.read("605499", "facts", limit=1, offset=0)
+        assert page["total"] == 1 and len(page["records"]) == 1
+        page = store.read("605499", "facts", limit=1, offset=1)
+        assert page["total"] == 1 and page["records"] == []
+        assert store.read("605499", "questions", status="待处理")["total"] == 1
+        assert store.read("605499", "questions", status="已解决")["total"] == 0
+
+
+def test_update_allowlists() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        store = fresh_store(folder)
+        store.append("605499", "facts", FACT)
+        store.append("605499", "hypotheses", HYPOTHESIS)
+        store.append("605499", "questions", QUESTION)
+        store.append("605499", "conclusions", {"title": "增长来源", "statement": "由核心单品驱动"})
+
+        updated = store.update("605499", "hypotheses", "H001", {"status": "部分支持"})
+        assert updated["record"]["status"] == "部分支持"
+        updated = store.update("605499", "facts", "F001", {"verification_status": "待核验"})
+        assert updated["record"]["verification_status"] == "待核验"
+        updated = store.update("605499", "questions", "Q001", {"status": "调查中"})
+        assert updated["record"]["status"] == "调查中"
+
+        for section, record_id in (
+            ("hypotheses", "H001"),
+            ("questions", "Q001"),
+            ("conclusions", "G001"),
+            ("changes", "C001"),
+        ):
+            try:
+                store.update("605499", section, record_id, {"status": "有效"})
+            except MemoryError:
+                pass
+            else:
+                raise AssertionError(f"{section} 不应该允许更新结论或变化字段")
+
+        try:
+            store.append("605499", "changes", {})
+        except MemoryError:
+            pass
+        else:
+            raise AssertionError("append 不应该能写 changes")
+
+
 def main() -> None:
     test_schema_and_fact_roundtrip()
     test_fact_dedupe_and_multi_metric_key()
@@ -161,6 +272,9 @@ def main() -> None:
     test_fact_rejects_oversize_record()
     test_ids_are_per_company()
     test_concurrent_appends_keep_all_records()
+    test_hypothesis_requires_falsification_and_fact_refs()
+    test_question_and_baseline_conclusion()
+    test_update_allowlists()
     print("PASS")
     sys.stdout.flush()
     os._exit(0)
