@@ -4,10 +4,12 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>投资助手</title>
-<link rel="stylesheet" href="/styles.css" />
+<!-- 改样式或脚本后把 v 加一，避免浏览器继续用旧缓存 -->
+<link rel="stylesheet" href="/styles.css?v=20261027" />
 </head>
 <body>
-<div id="app" class="app" v-cloak>
+<div id="app" v-cloak>
+<div class="app" :class="{ 'has-source': sourceView }">
   <aside class="side">
     <div class="brand"><span class="logo">研</span><span>投资助手</span></div>
     <button class="new-btn" @click="newChat"><span class="plus">+</span>新对话</button>
@@ -51,6 +53,8 @@
         :style="leftStyle"
         @state="onLeftState"
         @changed="refresh"
+        @open-source="openSource"
+        @close-source="closeSource"
       ></chat-pane>
       <div class="divider" v-if="splitOpen" :class="{ active: resizing }" @mousedown="startResize"></div>
       <chat-pane
@@ -61,12 +65,59 @@
         @state="onRightState"
         @changed="refresh"
         @close="closeSplit"
+        @open-source="openSource"
+        @close-source="closeSource"
       ></chat-pane>
     </div>
     <div class="drop-hint" v-if="dragging">
       <div class="drop-card">松开 → 在右侧打开这段对话</div>
     </div>
   </main>
+
+  <aside class="source-side" v-if="sourceView" role="dialog" aria-label="来源详情">
+    <header class="source-side-head">
+      <span class="source-side-title">来源详情</span>
+      <div class="source-side-nav" v-if="sourceView.total > 1">
+        <button class="nav-btn" :disabled="sourceView.index <= 0" @click="stepSource(-1)" title="上一条">‹</button>
+        <span class="nav-count">{{ sourceView.index + 1 }} / {{ sourceView.total }}</span>
+        <button class="nav-btn" :disabled="sourceView.index >= sourceView.total - 1" @click="stepSource(1)" title="下一条">›</button>
+      </div>
+      <button class="icon-btn close" @click="closeSource" title="关闭（Esc）">✕</button>
+    </header>
+    <div class="source-side-body">
+      <div class="sp-head">
+        <span class="src-num">{{ sourceView.n }}</span>
+        <span class="sp-label">{{ sourceView.label }}</span>
+      </div>
+      <p class="sp-detail" v-if="sourceView.detail">{{ sourceView.detail }}</p>
+      <dl class="sp-meta">
+        <div><dt>数据日期</dt><dd>{{ sourceView.asof || "未标注" }}</dd></div>
+        <div><dt>抓取时间</dt><dd>{{ sourceView.fetched || "未知" }}</dd></div>
+        <div><dt>来源编号</dt><dd class="mono">{{ sourceView.id || "--" }}</dd></div>
+      </dl>
+      <a class="sp-link" v-if="sourceView.url" :href="sourceView.url" target="_blank" rel="noreferrer">打开原文 ↗</a>
+
+      <section class="sp-sec">
+        <h3>回答里的引用</h3>
+        <p class="sp-empty" v-if="!sourceView.occurrences.length">这段回答没有直接引用这条来源。</p>
+        <blockquote class="sp-cite" v-for="(line, lineIndex) in sourceView.occurrences" :key="lineIndex">{{ line }}</blockquote>
+      </section>
+
+      <section class="sp-sec">
+        <h3>取数记录</h3>
+        <p class="sp-empty" v-if="!sourceView.steps.length">没有对应的工具记录（旧对话可能没有明细）。</p>
+        <div class="sp-step" v-for="(step, stepIndex) in sourceView.steps" :key="stepIndex">
+          <div class="sp-step-line">
+            <span class="sp-step-name">{{ step.name }}</span>
+            <span class="sp-step-out" :class="{ cached: step.cached, failed: !step.ok }">{{ step.ok ? (step.cached ? "复用缓存" : "成功") : "失败" }}</span>
+          </div>
+          <div class="sp-step-meta">{{ step.meta }}</div>
+          <div class="sp-step-error" v-if="step.error">{{ step.error }}</div>
+        </div>
+      </section>
+    </div>
+  </aside>
+</div>
 </div>
 
 <template id="pane-template">
@@ -126,8 +177,8 @@
                     role="button"
                     tabindex="0"
                     title="查看这条来源的完整信息"
-                    @click.stop="openSource(message, row.index)"
-                    @keydown.enter.stop="openSource(message, row.index)"
+                    @click.stop="requestSource(message, row.index)"
+                    @keydown.enter.stop="requestSource(message, row.index)"
                   >
                     <span class="src-num">{{ row.n }}</span>
                     <span class="src-label">{{ row.label }}</span>
@@ -135,7 +186,7 @@
                     <span class="src-asof" v-if="row.asof">{{ row.asof }}</span>
                     <a class="src-link" v-if="row.url" :href="row.url" target="_blank" rel="noreferrer" title="打开原文" @click.stop>↗</a>
                   </div>
-                  <button class="src-note src-more" v-if="message.sources.length > 6" @click.stop="openSource(message, 6)">
+                  <button class="src-note src-more" v-if="message.sources.length > 6" @click.stop="requestSource(message, 6)">
                     另有 {{ message.sources.length - 6 }} 条来源，查看全部 →
                   </button>
                 </div>
@@ -190,50 +241,6 @@
       </div>
     </div>
 
-    <aside class="source-panel" v-if="sourceView" role="dialog" aria-label="来源详情">
-      <header class="source-panel-head">
-        <span class="source-panel-title">来源详情</span>
-        <button class="source-panel-close" @click="closeSource" title="关闭（Esc）">✕</button>
-      </header>
-      <div class="source-panel-body">
-        <div class="sp-head">
-          <span class="src-num">{{ sourceView.n }}</span>
-          <span class="sp-label">{{ sourceView.label }}</span>
-        </div>
-        <p class="sp-detail" v-if="sourceView.detail">{{ sourceView.detail }}</p>
-        <dl class="sp-meta">
-          <div><dt>数据日期</dt><dd>{{ sourceView.asof || "未标注" }}</dd></div>
-          <div><dt>抓取时间</dt><dd>{{ sourceView.fetched || "未知" }}</dd></div>
-          <div><dt>来源编号</dt><dd class="mono">{{ sourceView.id || "--" }}</dd></div>
-        </dl>
-        <a class="sp-link" v-if="sourceView.url" :href="sourceView.url" target="_blank" rel="noreferrer">打开原文 ↗</a>
-
-        <section class="sp-sec">
-          <h3>回答里的引用</h3>
-          <p class="sp-empty" v-if="!sourceView.occurrences.length">这段回答没有直接引用这条来源。</p>
-          <blockquote class="sp-cite" v-for="(line, lineIndex) in sourceView.occurrences" :key="lineIndex">{{ line }}</blockquote>
-        </section>
-
-        <section class="sp-sec">
-          <h3>取数记录</h3>
-          <p class="sp-empty" v-if="!sourceView.steps.length">没有对应的工具记录（旧对话可能没有明细）。</p>
-          <div class="sp-step" v-for="(step, stepIndex) in sourceView.steps" :key="stepIndex">
-            <div class="sp-step-line">
-              <span class="sp-step-name">{{ step.name }}</span>
-              <span class="sp-step-out" :class="{ cached: step.cached, failed: !step.ok }">{{ step.ok ? (step.cached ? "复用缓存" : "成功") : "失败" }}</span>
-            </div>
-            <div class="sp-step-meta">{{ step.meta }}</div>
-            <div class="sp-step-error" v-if="step.error">{{ step.error }}</div>
-          </div>
-        </section>
-      </div>
-      <footer class="source-panel-foot" v-if="sourceView.total > 1">
-        <button class="sp-nav" :disabled="sourceView.index <= 0" @click="stepSource(-1)">← 上一条</button>
-        <span class="sp-count">{{ sourceView.index + 1 }} / {{ sourceView.total }}</span>
-        <button class="sp-nav" :disabled="sourceView.index >= sourceView.total - 1" @click="stepSource(1)">下一条 →</button>
-      </footer>
-    </aside>
-
     <div
       class="tip"
       v-if="tip"
@@ -257,6 +264,6 @@
 <script src="/assets/vue.global.prod.js"></script>
 <script src="/assets/marked.umd.js"></script>
 <script src="/assets/purify.min.js"></script>
-<script src="/app.js"></script>
+<script src="/app.js?v=20261027"></script>
 </body>
 </html>

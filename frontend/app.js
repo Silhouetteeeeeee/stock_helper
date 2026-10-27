@@ -92,7 +92,7 @@ const ChatPane = {
   props: {
     secondary: { type: Boolean, default: false },
   },
-  emits: ["state", "changed", "close"],
+  emits: ["state", "changed", "close", "open-source", "close-source"],
   data() {
     return {
       cid: null,
@@ -110,7 +110,6 @@ const ChatPane = {
       usage: null,
       copied: -1,
       tip: null,
-      sourceView: null,
     };
   },
   computed: {
@@ -138,17 +137,10 @@ const ChatPane = {
     this.hideTimer = null;
     this.lastStreamScroll = 0;
     this.tipAnchor = null;
-    this.sourceMsg = null;
-    this.sourceIndex = -1;
-    this.onEscape = (event) => {
-      if (event.key === "Escape") this.closeSource();
-    };
-    window.addEventListener("keydown", this.onEscape);
   },
   beforeUnmount() {
     if (this.noticeTimer) clearTimeout(this.noticeTimer);
     if (this.hideTimer) clearTimeout(this.hideTimer);
-    window.removeEventListener("keydown", this.onEscape);
   },
   methods: {
     formatTokens,
@@ -181,7 +173,7 @@ const ChatPane = {
         this.notice = "";
         this.copied = -1;
         this.hideTip();
-        this.closeSource();
+        this.$emit("close-source");
         this.scroll(true);
         this.notify();
       } catch (error) {
@@ -199,7 +191,7 @@ const ChatPane = {
       this.notice = "";
       this.copied = -1;
       this.hideTip();
-      this.closeSource();
+      this.$emit("close-source");
       this.scroll(true);
       this.notify();
     },
@@ -234,7 +226,7 @@ const ChatPane = {
       this.notice = "";
       this.copied = -1;
       this.hideTip();
-      this.closeSource();
+      this.$emit("close-source");
       if (this.$refs.inputEl) this.$refs.inputEl.style.height = "auto";
       this.scroll(true);
 
@@ -379,92 +371,10 @@ const ChatPane = {
         url: source.url || "",
       }));
     },
-    // ---------------- 来源详情侧栏 ----------------
-    openSource(message, index) {
-      const sources = message.sources || [];
-      const source = sources[index];
-      if (!source) return;
+    // 来源详情放在页面最右侧的全局侧栏里，这里只负责把点击转给页面
+    requestSource(message, index) {
       this.hideTip();
-      const id = String(source.id || "");
-      this.sourceMsg = message;
-      this.sourceIndex = index;
-      this.sourceView = {
-        index,
-        total: sources.length,
-        n: index + 1,
-        label: source.label || id || "未知来源",
-        detail: source.detail || "",
-        asof: source.as_of || "",
-        fetched: source.fetched_at || "",
-        url: source.url || "",
-        id,
-        occurrences: this.citationSnippets(message, id, index + 1),
-        steps: this.sourceSteps(message, id),
-      };
-    },
-    stepSource(delta) {
-      if (!this.sourceMsg) return;
-      const next = this.sourceIndex + delta;
-      const total = (this.sourceMsg.sources || []).length;
-      if (next < 0 || next >= total) return;
-      this.openSource(this.sourceMsg, next);
-    },
-    closeSource() {
-      this.sourceView = null;
-      this.sourceMsg = null;
-      this.sourceIndex = -1;
-    },
-    // 回答里引用这条来源的原句：截取引号附近的一段，顶部角标换成 [n]
-    citationSnippets(message, id, number) {
-      const marker = `[[${id}]]`;
-      const text = String(message.text || "");
-      const seen = new Set();
-      const snippets = [];
-      text.split(/\n+/).forEach((raw) => {
-        const para = raw.trim();
-        const at = para.indexOf(marker);
-        if (at < 0) return;
-        const start = Math.max(0, at - 100);
-        const end = Math.min(para.length, at + marker.length + 100);
-        const snippet = `${start > 0 ? "…" : ""}${para.slice(start, end)}${end < para.length ? "…" : ""}`
-          .replace(/\[\[([^\[\]]+)\]\]/g, (match) => (match === marker ? `[${number}]` : ""))
-          .replace(/\s+/g, " ")
-          .trim();
-        if (!snippet || seen.has(snippet)) return;
-        seen.add(snippet);
-        snippets.push(snippet);
-      });
-      return snippets.slice(0, 4);
-    },
-    // 哪次工具调用取回了这条来源；旧记录没有 trace 明细时为空
-    sourceSteps(message, id) {
-      const steps = Array.isArray(message.trace) ? message.trace : [];
-      return steps
-        .filter((step) => (step.sources || []).map(String).includes(id))
-        .map((step) => {
-          const parts = [];
-          if (step.round) parts.push(`第 ${step.round} 轮`);
-          if (step.company) parts.push(step.company);
-          if (step.as_of) parts.push(step.as_of);
-          parts.push(`耗时 ${formatDuration(step.duration_ms)}`);
-          const args = this.argumentText(step.arguments);
-          if (args) parts.push(args);
-          return {
-            name: step.name || "未知工具",
-            ok: step.ok !== false,
-            cached: !!step.cached,
-            error: step.error || "",
-            meta: parts.join(" · "),
-          };
-        });
-    },
-    argumentText(args) {
-      if (!args || typeof args !== "object") return "";
-      const parts = Object.entries(args)
-        .filter(([key, value]) => key !== "company" && value !== null && value !== undefined && value !== "")
-        .map(([key, value]) => `${key}=${typeof value === "object" ? JSON.stringify(value) : value}`);
-      const text = parts.join(" · ");
-      return text.length > 140 ? `${text.slice(0, 140)}…` : text;
+      this.$emit("open-source", message, index);
     },
     traceOf(message) {
       const steps = Array.isArray(message.trace) ? message.trace : [];
@@ -502,7 +412,7 @@ const ChatPane = {
       const id = cite.dataset.id || "";
       const index = message.sources.findIndex((source) => String(source.id || "") === id);
       if (index < 0) return;
-      this.openSource(message, index);
+      this.requestSource(message, index);
     },
     showTip(event) {
       const target = event.target;
@@ -573,6 +483,7 @@ createApp({
       splitRatio: 52,
       dragging: false,
       resizing: false,
+      sourceView: null,
     };
   },
   computed: {
@@ -636,6 +547,93 @@ createApp({
       if (pane) pane.newChat();
     },
 
+    // ---------------- 来源详情侧栏（页面最右侧） ----------------
+    openSource(message, index) {
+      const sources = (message && message.sources) || [];
+      const source = sources[index];
+      if (!source) return;
+      const id = String(source.id || "");
+      this.sourceMsg = message;
+      this.sourceIndex = index;
+      this.sourceView = {
+        index,
+        total: sources.length,
+        n: index + 1,
+        label: source.label || id || "未知来源",
+        detail: source.detail || "",
+        asof: source.as_of || "",
+        fetched: source.fetched_at || "",
+        url: source.url || "",
+        id,
+        occurrences: this.citationSnippets(message, id, index + 1),
+        steps: this.sourceSteps(message, id),
+      };
+    },
+    stepSource(delta) {
+      if (!this.sourceMsg) return;
+      const next = this.sourceIndex + delta;
+      const total = (this.sourceMsg.sources || []).length;
+      if (next < 0 || next >= total) return;
+      this.openSource(this.sourceMsg, next);
+    },
+    closeSource() {
+      this.sourceView = null;
+      this.sourceMsg = null;
+      this.sourceIndex = -1;
+    },
+    // 回答里引用这条来源的原句：截取角标附近的一段，角标换成 [n]
+    citationSnippets(message, id, number) {
+      const marker = `[[${id}]]`;
+      const text = String(message.text || "");
+      const seen = new Set();
+      const snippets = [];
+      text.split(/\n+/).forEach((raw) => {
+        const para = raw.trim();
+        const at = para.indexOf(marker);
+        if (at < 0) return;
+        const start = Math.max(0, at - 100);
+        const end = Math.min(para.length, at + marker.length + 100);
+        const snippet = `${start > 0 ? "…" : ""}${para.slice(start, end)}${end < para.length ? "…" : ""}`
+          .replace(/\[\[([^\[\]]+)\]\]/g, (match) => (match === marker ? `[${number}]` : ""))
+          .replace(/\s+/g, " ")
+          .trim();
+        if (!snippet || seen.has(snippet)) return;
+        seen.add(snippet);
+        snippets.push(snippet);
+      });
+      return snippets.slice(0, 4);
+    },
+    // 哪次工具调用取回了这条来源；旧记录没有 trace 明细时为空
+    sourceSteps(message, id) {
+      const steps = Array.isArray(message.trace) ? message.trace : [];
+      return steps
+        .filter((step) => (step.sources || []).map(String).includes(id))
+        .map((step) => {
+          const parts = [];
+          if (step.round) parts.push(`第 ${step.round} 轮`);
+          if (step.company) parts.push(step.company);
+          if (step.as_of) parts.push(step.as_of);
+          parts.push(`耗时 ${formatDuration(step.duration_ms)}`);
+          const args = this.argumentText(step.arguments);
+          if (args) parts.push(args);
+          return {
+            name: step.name || "未知工具",
+            ok: step.ok !== false,
+            cached: !!step.cached,
+            error: step.error || "",
+            meta: parts.join(" · "),
+          };
+        });
+    },
+    argumentText(args) {
+      if (!args || typeof args !== "object") return "";
+      const parts = Object.entries(args)
+        .filter(([key, value]) => key !== "company" && value !== null && value !== undefined && value !== "")
+        .map(([key, value]) => `${key}=${typeof value === "object" ? JSON.stringify(value) : value}`);
+      const text = parts.join(" · ");
+      return text.length > 140 ? `${text.slice(0, 140)}…` : text;
+    },
+
     // ---------------- 拖动分屏 ----------------
     onDragStart(event, item) {
       try {
@@ -697,6 +695,17 @@ createApp({
       if (state.id) localStorage.setItem(SPLIT_KEY, String(state.id));
       else localStorage.removeItem(SPLIT_KEY);
     },
+  },
+  created() {
+    this.sourceMsg = null;
+    this.sourceIndex = -1;
+    this.onEscape = (event) => {
+      if (event.key === "Escape") this.closeSource();
+    };
+    window.addEventListener("keydown", this.onEscape);
+  },
+  beforeUnmount() {
+    window.removeEventListener("keydown", this.onEscape);
   },
   async mounted() {
     this.splitRatio = Number(localStorage.getItem(RATIO_KEY)) || 52;
