@@ -25,6 +25,7 @@ from openai import (
 from .citations import validate_citations
 from .models import Source, ToolResult
 from .prompts import SYSTEM_PROMPT
+from .research_memory import default_store
 from .tools import run_tool, schemas
 
 DEFAULT_MODEL = "deepseek-flash"
@@ -49,6 +50,11 @@ UNCACHED_TOOLS = frozenset({
     "build_strategy_plan",
     "save_daily_judgment",
     "review_research_reports",
+    "list_research_memory",
+    "read_research_memory",
+    "append_research_record",
+    "update_research_record",
+    "record_conclusion_change",
 })
 
 # 上下文预算：按 DeepSeek 128K 留出 thinking、回答和本轮继续取数的空间。
@@ -105,11 +111,13 @@ class ResearchAgent:
         default_company: str | None = None,
         model: str = DEFAULT_MODEL,
         max_rounds: int = MAX_ROUNDS,
+        memory=None,
     ) -> None:
         self.client = client
         self.default_company = default_company
         self.model = model
         self.max_rounds = max_rounds
+        self._memory = memory
         self._history: list[dict] = []
         self._registry: dict[str, Source] = {}
         # 会话级取数缓存：同一公司、同一参数只保留一份完整结果，重复调用不再联网
@@ -645,9 +653,23 @@ class ResearchAgent:
     # ------------------------------------------------------------------
     # 内部
     # ------------------------------------------------------------------
+    def _memory_brief(self) -> str:
+        """默认公司是六位代码时取研究档案摘要；读不到就当没有。"""
+        code = str(self.default_company or "")
+        if len(code) != 6 or not code.isdigit():
+            return ""
+        store = self._memory or default_store()
+        try:
+            return store.brief(code)
+        except Exception:  # noqa: BLE001 - 档案读失败不能拖垮对话
+            return ""
+
     def _system_text(self) -> str:
         company = self.default_company or "未指定（大盘/市场问题不需要公司）"
         text = f"{SYSTEM_PROMPT}\n\n当前默认公司：{company}"
+        brief = self._memory_brief()
+        if brief:
+            text += f"\n\n{brief}"
         if self._summary:
             text += f"\n\n此前对话摘要（较早轮次已省略）：\n{self._summary}"
         return text

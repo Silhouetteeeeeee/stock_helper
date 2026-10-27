@@ -798,6 +798,35 @@ def test_summary_failure_falls_back_to_omitting_turns() -> None:
     assert "问题2" in contents
 
 
+def test_memory_brief_injected() -> None:
+    class FakeMemory:
+        def __init__(self):
+            self.calls = []
+
+        def brief(self, code):
+            self.calls.append(code)
+            return "研究档案：605499 东鹏饮料"
+
+    memory = FakeMemory()
+    agent = agent_mod.ResearchAgent(FakeClient([]), default_company="605499", memory=memory)
+    text = agent._system_text()
+    assert "研究档案：605499 东鹏饮料" in text
+    assert memory.calls == ["605499"]
+
+    market = agent_mod.ResearchAgent(FakeClient([]), default_company="MARKET", memory=memory)
+    market._system_text()
+    assert memory.calls == ["605499"]  # 大盘不读档案
+
+
+def test_memory_tools_uncached() -> None:
+    for name in (
+        "list_research_memory", "read_research_memory",
+        "append_research_record", "update_research_record",
+        "record_conclusion_change",
+    ):
+        assert name in agent_mod.UNCACHED_TOOLS
+
+
 def main() -> None:
     test_loop_and_citation()
     test_unknown_citation_and_round_limit()
@@ -810,6 +839,8 @@ def main() -> None:
     test_api_failure_rolls_back_history()
     test_prompt_has_concrete_citation_example()
     test_prompt_is_skill_based()
+    test_memory_brief_injected()
+    test_memory_tools_uncached()
     test_broad_question_loads_both_skills()
     test_use_company()
     test_tool_result_cache_reuses_same_call()
