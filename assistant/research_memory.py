@@ -385,7 +385,9 @@ def _validate_hypothesis(record: dict) -> dict:
             record.get("verification_method"), "verification_method", required=True
         ),
         "falsification_condition": _text(
-            record.get("falsification_condition"), "falsification_condition", required=True
+            record.get("falsification_condition"),
+            "证伪条件（falsification_condition）",
+            required=True,
         ),
         "status": _enum(record.get("status"), "status", HYPOTHESIS_STATUSES),
         "next_review_date": _text(record.get("next_review_date"), "next_review_date") or None,
