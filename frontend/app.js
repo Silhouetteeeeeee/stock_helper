@@ -154,7 +154,7 @@ const EvidenceView = {
       this.value.forEach((row) => {
         if (!row || typeof row !== "object" || Array.isArray(row)) return;
         Object.keys(row).forEach((key) => {
-          if (!keys.includes(key) && keys.length < 8) keys.push(key);
+          if (!keys.includes(key)) keys.push(key);
         });
       });
       return keys;
@@ -195,16 +195,18 @@ const EvidenceView = {
           <span class="ev-val" v-else>{{ text(entry.value) }}</span>
         </div>
       </template>
-      <table class="ev-table" v-else-if="isTable">
-        <thead>
-          <tr><th v-for="key in tableHeaders" :key="key">{{ label(key) }}</th></tr>
-        </thead>
-        <tbody>
-          <tr v-for="(row, index) in rows" :key="index">
-            <td v-for="key in tableHeaders" :key="key">{{ cell(row, key) }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="ev-table-wrap" v-else-if="isTable">
+        <table class="ev-table">
+          <thead>
+            <tr><th v-for="key in tableHeaders" :key="key">{{ label(key) }}</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="(row, index) in rows" :key="index">
+              <td v-for="key in tableHeaders" :key="key">{{ cell(row, key) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <template v-else-if="isArray">
         <div class="ev-item" v-for="(item, index) in value" :key="index">
           <evidence-view :value="item" :depth="depth + 1"></evidence-view>
@@ -617,6 +619,8 @@ createApp({
       dragging: false,
       resizing: false,
       sourceView: null,
+      sourceWidth: 380,
+      sourceResizing: false,
       evidence: null,
       evidenceState: "idle",
     };
@@ -738,6 +742,31 @@ createApp({
       this.evidence = null;
       this.evidenceState = "idle";
       this.evidenceToken = (this.evidenceToken || 0) + 1;
+    },
+    sourceWidthLimit() {
+      // 左边对话区至少留 460px，侧栏最宽 760px
+      return Math.max(320, Math.min(760, window.innerWidth - 460));
+    },
+    // 拖侧栏左边缘调宽：往左拖变宽，宽度记在 localStorage
+    startSourceResize(event) {
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidth = this.sourceWidth;
+      const move = (moveEvent) => {
+        const next = startWidth + (startX - moveEvent.clientX);
+        this.sourceWidth = Math.min(Math.max(next, 300), this.sourceWidthLimit());
+      };
+      const up = () => {
+        this.sourceResizing = false;
+        window.removeEventListener("mousemove", move);
+        window.removeEventListener("mouseup", up);
+        try {
+          localStorage.setItem("sourceWidth", String(Math.round(this.sourceWidth)));
+        } catch (error) { /* 存不下来也不影响使用 */ }
+      };
+      this.sourceResizing = true;
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
     },
     // 依据不是回答里的原句，而是这次工具调用真正取回来的数据
     async loadEvidence() {
@@ -861,6 +890,10 @@ createApp({
   created() {
     this.sourceMsg = null;
     this.sourceIndex = -1;
+    const savedWidth = Number(localStorage.getItem("sourceWidth"));
+    if (Number.isFinite(savedWidth) && savedWidth >= 300) {
+      this.sourceWidth = Math.min(savedWidth, this.sourceWidthLimit());
+    }
     this.onEscape = (event) => {
       if (event.key === "Escape") this.closeSource();
     };
