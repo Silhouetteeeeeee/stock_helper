@@ -618,6 +618,8 @@ createApp({
       splitRatio: 52,
       dragging: false,
       resizing: false,
+      sideWidth: 288,
+      sideResizing: false,
       sourceView: null,
       sourceWidth: 380,
       sourceResizing: false,
@@ -746,6 +748,31 @@ createApp({
     sourceWidthLimit() {
       // 左边对话区至少留 460px，侧栏最宽 760px
       return Math.max(320, Math.min(760, window.innerWidth - 460));
+    },
+    sideWidthLimit() {
+      // 左侧对话列表最宽 460px，中间对话区至少留 620px
+      return Math.max(240, Math.min(460, window.innerWidth - 620));
+    },
+    // 拖左侧栏右边缘调宽：往右拖变宽，宽度记在 localStorage
+    startSideResize(event) {
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidth = this.sideWidth;
+      const move = (moveEvent) => {
+        const next = startWidth + (moveEvent.clientX - startX);
+        this.sideWidth = Math.min(Math.max(next, 220), this.sideWidthLimit());
+      };
+      const up = () => {
+        this.sideResizing = false;
+        window.removeEventListener("mousemove", move);
+        window.removeEventListener("mouseup", up);
+        try {
+          localStorage.setItem("sideWidth", String(Math.round(this.sideWidth)));
+        } catch (error) { /* 存不下来也不影响使用 */ }
+      };
+      this.sideResizing = true;
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
     },
     // 拖侧栏左边缘调宽：往左拖变宽，宽度记在 localStorage
     startSourceResize(event) {
@@ -893,6 +920,10 @@ createApp({
     const savedWidth = Number(localStorage.getItem("sourceWidth"));
     if (Number.isFinite(savedWidth) && savedWidth >= 300) {
       this.sourceWidth = Math.min(savedWidth, this.sourceWidthLimit());
+    }
+    const savedSide = Number(localStorage.getItem("sideWidth"));
+    if (Number.isFinite(savedSide) && savedSide >= 220) {
+      this.sideWidth = Math.min(savedSide, this.sideWidthLimit());
     }
     this.onEscape = (event) => {
       if (event.key === "Escape") this.closeSource();

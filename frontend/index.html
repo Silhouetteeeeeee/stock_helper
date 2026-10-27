@@ -5,16 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>投资助手</title>
 <!-- 改样式或脚本后把 v 加一，避免浏览器继续用旧缓存 -->
-<link rel="stylesheet" href="/styles.css?v=20261027c" />
+<link rel="stylesheet" href="/styles.css?v=20261027d" />
 </head>
 <body>
 <div id="app" v-cloak>
 <div
   class="app"
-  :class="{ 'has-source': sourceView, 'resizing-source': sourceResizing }"
-  :style="{ '--source-w': sourceWidth + 'px' }"
+  :class="{ 'has-source': sourceView, 'resizing-source': sourceResizing, 'resizing-side': sideResizing }"
+  :style="{ '--source-w': sourceWidth + 'px', '--side-w': sideWidth + 'px' }"
 >
   <aside class="side">
+    <div class="side-resizer" :class="{ active: sideResizing }" @mousedown.prevent="startSideResize" title="拖动调整侧栏宽度"></div>
     <div class="brand"><span class="logo">研</span><span>投资助手</span></div>
     <button class="new-btn" @click="newChat"><span class="plus">+</span>新对话</button>
 
@@ -279,6 +280,6 @@
 <script src="/assets/vue.global.prod.js"></script>
 <script src="/assets/marked.umd.js"></script>
 <script src="/assets/purify.min.js"></script>
-<script src="/app.js?v=20261027c"></script>
+<script src="/app.js?v=20261027d"></script>
 </body>
 </html>
