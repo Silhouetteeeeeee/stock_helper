@@ -265,6 +265,150 @@ def test_update_allowlists() -> None:
             raise AssertionError("append 不应该能写 changes")
 
 
+def baseline(store: ResearchMemoryStore) -> None:
+    store.append("605499", "facts", FACT)
+    store.append("605499", "hypotheses", HYPOTHESIS)
+    store.append("605499", "conclusions", {
+        "title": "增长来源", "statement": "增长主要依赖核心单品",
+        "based_on_fact_ids": ["F001"],
+    })
+
+
+def change_payload(**overrides) -> dict:
+    payload = {
+        "conclusion_id": "G001",
+        "operation": "修正",
+        "old_conclusion": "增长主要依赖核心单品",
+        "new_conclusion": "增长由核心单品与电解质饮料共同驱动",
+        "trigger_event": "2025 年年报披露产品结构",
+        "trigger_date": "2026-03-31",
+        "evidence_ids": ["F001"],
+        "reason": "电解质饮料已形成一定规模的收入贡献",
+        "impact": "增长预测按业务拆分",
+        "review_status": "待后续财报验证",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_record_change_operations() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        store = fresh_store(folder)
+        baseline(store)
+
+        assert store.company("605499")["counts"]["changes"] == 0
+        revised = store.record_change("605499", change_payload())
+        assert revised["change"]["change_id"] == "C001"
+        assert revised["change"]["from_conclusion_id"] == "G001"
+        assert revised["change"]["to_conclusion_id"] == "G001"
+        assert revised["to"]["statement"] == "增长由核心单品与电解质饮料共同驱动"
+        assert revised["to"]["last_change_id"] == "C001"
+        assert "F001" in revised["to"]["based_on_fact_ids"]
+        assert revised["counts"]["changes"] == 1
+        assert store.company("605499")["last_reviewed_at"]
+
+        maintained = store.record_change("605499", change_payload(
+            operation="维持",
+            old_conclusion=revised["to"]["statement"],
+            new_conclusion=revised["to"]["statement"],
+            trigger_event="2026 年三季报复核",
+            trigger_date="2026-10-27",
+        ))
+        assert maintained["to"]["statement"] == revised["to"]["statement"]
+        assert maintained["change"]["operation"] == "维持"
+
+        overturned = store.record_change("605499", change_payload(
+            operation="推翻",
+            old_conclusion=maintained["to"]["statement"],
+            new_conclusion="增长由单一新品驱动",
+            new_title="增长来源（修正）",
+            trigger_event="新品收入占比超过 60%",
+            trigger_date="2027-03-31",
+        ))
+        assert overturned["change"]["from_conclusion_id"] == "G001"
+        assert overturned["change"]["to_conclusion_id"] == "G002"
+        assert overturned["from"]["status"] == "已推翻"
+        assert overturned["to"]["status"] == "有效"
+        assert overturned["to"]["statement"] == "增长由单一新品驱动"
+
+
+def test_record_change_validation() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        store = fresh_store(folder)
+        baseline(store)
+        bad = [
+            change_payload(operation="维持", new_conclusion="不一样"),
+            change_payload(evidence_ids=[]),
+            change_payload(evidence_ids=["F999"]),
+            change_payload(conclusion_id="G999"),
+        ]
+        for payload in bad:
+            try:
+                store.record_change("605499", payload)
+            except MemoryError:
+                pass
+            else:
+                raise AssertionError(f"应拒绝：{payload}")
+
+
+def test_changes_are_append_only() -> None:
+    import sqlite3
+
+    with tempfile.TemporaryDirectory() as folder:
+        store = fresh_store(folder)
+        baseline(store)
+        store.record_change("605499", change_payload())
+        connection = sqlite3.connect(Path(folder) / "research_memory.db")
+        for sql in (
+            "UPDATE memory_change SET reason = 'x'",
+            "DELETE FROM memory_change",
+        ):
+            try:
+                connection.execute(sql)
+                connection.commit()
+            except sqlite3.IntegrityError:
+                connection.rollback()
+            else:
+                raise AssertionError(f"触发器没有阻止：{sql}")
+        connection.close()
+
+
+def test_last_reviewed_only_moves_on_change() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        store = fresh_store(folder)
+        baseline(store)
+        before = store.company("605499")["last_reviewed_at"]
+        assert before is None
+        store.append("605499", "facts", dict(FACT, metrics=[
+            {"name": "归母净利润", "value": 44.15, "unit": "亿元"}
+        ]))
+        store.update("605499", "facts", "F001", {"verification_status": "待核验"})
+        assert store.company("605499")["last_reviewed_at"] is None
+        store.record_change("605499", change_payload())
+        assert store.company("605499")["last_reviewed_at"]
+
+
+def test_brief_order_and_cap() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        store = fresh_store(folder)
+        store.ensure_company("605499", "东鹏饮料")
+        store.append("605499", "facts", FACT)
+        for index in range(7):
+            store.append("605499", "conclusions", {
+                "title": f"结论{index}", "statement": f"判断{index} " + "长" * 80,
+            })
+        brief = store.brief("605499")
+        assert brief.startswith("研究档案：605499 东鹏饮料")
+        assert "G007" in brief
+        assert "G001" not in brief  # 最多 5 条活跃结论
+        assert "另有 2 条" in brief
+        assert "明细用 read_research_memory 读取" in brief
+        assert "事实 1" in brief
+        assert len(brief) <= 1200
+        assert store.brief("600519") == "尚无研究档案"
+        assert store.company("600519") is None  # 摘要不自动建档
+
+
 def main() -> None:
     test_schema_and_fact_roundtrip()
     test_fact_dedupe_and_multi_metric_key()
@@ -275,6 +419,11 @@ def main() -> None:
     test_hypothesis_requires_falsification_and_fact_refs()
     test_question_and_baseline_conclusion()
     test_update_allowlists()
+    test_record_change_operations()
+    test_record_change_validation()
+    test_changes_are_append_only()
+    test_last_reviewed_only_moves_on_change()
+    test_brief_order_and_cap()
     print("PASS")
     sys.stdout.flush()
     os._exit(0)

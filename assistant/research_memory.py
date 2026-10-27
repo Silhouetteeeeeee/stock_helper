@@ -29,6 +29,7 @@ CONFIDENCE_LEVELS = ("低", "中", "高")
 CONCLUSION_STATUSES = ("有效", "已推翻")
 IMPORTANCE_LEVELS = ("高", "中", "低")
 QUESTION_STATUSES = ("待处理", "调查中", "已解决", "暂时无法解决")
+CHANGE_OPERATIONS = ("补充", "修正", "推翻", "维持")
 OPEN_QUESTION_STATUSES = ("待处理", "调查中")
 MAX_FIELD_BYTES = 20 * 1024
 MAX_RECORD_BYTES = 50 * 1024
@@ -51,6 +52,7 @@ _TABLES = {
         "CASE importance WHEN '高' THEN 0 WHEN '中' THEN 1 ELSE 2 END, "
         "last_checked_at ASC, id ASC",
     ),
+    "changes": ("memory_change", "change_id", "review_status", "created_at DESC, id DESC"),
 }
 
 _SCHEMA = """
@@ -143,6 +145,37 @@ CREATE TABLE IF NOT EXISTS memory_question (
 );
 
 CREATE INDEX IF NOT EXISTS idx_question ON memory_question(code, status, importance);
+
+CREATE TABLE IF NOT EXISTS memory_change (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  code          TEXT NOT NULL,
+  change_id     TEXT NOT NULL,
+  from_conclusion_id TEXT NOT NULL,
+  to_conclusion_id   TEXT NOT NULL,
+  operation     TEXT NOT NULL,
+  old_conclusion TEXT NOT NULL,
+  new_conclusion TEXT NOT NULL,
+  trigger_event TEXT NOT NULL,
+  trigger_date  TEXT NOT NULL,
+  evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+  reason        TEXT NOT NULL,
+  impact        TEXT NOT NULL,
+  review_status TEXT NOT NULL DEFAULT '',
+  created_at    TEXT NOT NULL,
+  UNIQUE (code, change_id),
+  FOREIGN KEY (code, from_conclusion_id) REFERENCES memory_conclusion (code, conclusion_id),
+  FOREIGN KEY (code, to_conclusion_id) REFERENCES memory_conclusion (code, conclusion_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_change ON memory_change(code);
+
+CREATE TRIGGER IF NOT EXISTS memory_change_no_update
+BEFORE UPDATE ON memory_change
+BEGIN SELECT RAISE(ABORT, 'conclusion changes are append-only'); END;
+
+CREATE TRIGGER IF NOT EXISTS memory_change_no_delete
+BEFORE DELETE ON memory_change
+BEGIN SELECT RAISE(ABORT, 'conclusion changes are append-only'); END;
 """
 
 
@@ -406,12 +439,31 @@ def _validate_conclusion(record: dict) -> dict:
     return conclusion
 
 
+def _change_row(row: sqlite3.Row) -> dict:
+    return {
+        "change_id": row["change_id"],
+        "from_conclusion_id": row["from_conclusion_id"],
+        "to_conclusion_id": row["to_conclusion_id"],
+        "operation": row["operation"],
+        "old_conclusion": row["old_conclusion"],
+        "new_conclusion": row["new_conclusion"],
+        "trigger_event": row["trigger_event"],
+        "trigger_date": row["trigger_date"],
+        "evidence_ids": _load_list(row["evidence_ids_json"]),
+        "reason": row["reason"],
+        "impact": row["impact"],
+        "review_status": row["review_status"],
+        "created_at": row["created_at"],
+    }
+
+
 def _row_mapper(section: str) -> Callable[[sqlite3.Row], dict]:
     return {
         "facts": _fact_row,
         "hypotheses": _hypothesis_row,
         "conclusions": _conclusion_row,
         "questions": _question_row,
+        "changes": _change_row,
     }[section]
 
 
@@ -462,6 +514,15 @@ def _missing_ids(
     ).fetchall()
     found = {row["record_id"] for row in rows}
     return [item for item in ids if item not in found]
+
+
+def _merge_ids(existing: list, extra: list) -> list:
+    merged: list[str] = []
+    for item in (*existing, *extra):
+        text = str(item)
+        if text not in merged:
+            merged.append(text)
+    return merged
 
 
 class ResearchMemoryStore:
@@ -549,6 +610,7 @@ class ResearchMemoryStore:
                 " AND status IN (?, ?)",
                 OPEN_QUESTION_STATUSES,
             ),
+            "changes": count("memory_change"),
         }
 
     def _company_summary(self, connection: sqlite3.Connection, row: sqlite3.Row) -> dict:
@@ -832,6 +894,280 @@ class ResearchMemoryStore:
             counts = self._counts(connection, code)
         return {"record": updated, "counts": counts}
 
+    def record_change(self, code: str, payload: dict) -> dict:
+        code = _code(code)
+        if not isinstance(payload, dict):
+            raise MemoryError("payload 必须是对象")
+        operation = _enum(payload.get("operation"), "operation", CHANGE_OPERATIONS)
+        conclusion_id = _text(payload.get("conclusion_id"), "conclusion_id", required=True)
+        old_conclusion = _text(payload.get("old_conclusion"), "old_conclusion", required=True)
+        new_conclusion = _text(payload.get("new_conclusion"), "new_conclusion", required=True)
+        trigger_event = _text(payload.get("trigger_event"), "trigger_event", required=True)
+        trigger_date = _text(payload.get("trigger_date"), "trigger_date", required=True)
+        reason = _text(payload.get("reason"), "reason", required=True)
+        impact = _text(payload.get("impact"), "impact", required=True)
+        review_status = _text(payload.get("review_status"), "review_status")
+        new_title = _text(payload.get("new_title"), "new_title")
+        confidence = _enum(payload.get("confidence"), "confidence", CONFIDENCE_LEVELS, default="")
+        evidence_ids = _ref_ids(payload.get("evidence_ids"), "evidence_ids", r"[FH]\d{3,}")
+        based_facts = _ref_ids(
+            payload.get("based_on_fact_ids"), "based_on_fact_ids", r"F\d{3,}"
+        )
+        based_hypos = _ref_ids(
+            payload.get("based_on_hypothesis_ids"), "based_on_hypothesis_ids", r"H\d{3,}"
+        )
+        if not evidence_ids:
+            raise MemoryError("变化必须附至少一条证据")
+        if operation == "维持":
+            if new_conclusion != old_conclusion:
+                raise MemoryError("维持时新旧结论必须相同")
+        elif new_conclusion == old_conclusion:
+            raise MemoryError("补充/修正/推翻的新结论必须区别于旧结论")
+        if operation == "推翻" and not new_title:
+            raise MemoryError("推翻必须提供 new_title")
+        _record_size({
+            "conclusion_id": conclusion_id,
+            "old_conclusion": old_conclusion,
+            "new_conclusion": new_conclusion,
+            "trigger_event": trigger_event,
+            "reason": reason,
+            "impact": impact,
+            "evidence_ids": evidence_ids,
+        })
+
+        fact_evidence = [item for item in evidence_ids if item.startswith("F")]
+        hypothesis_evidence = [item for item in evidence_ids if item.startswith("H")]
+
+        def operation_fn(connection: sqlite3.Connection) -> tuple[str, sqlite3.Row, sqlite3.Row]:
+            company = connection.execute(
+                "SELECT 1 FROM company_memory WHERE code = ?", (code,)
+            ).fetchone()
+            if company is None:
+                raise MemoryError("尚未建档")
+            current = connection.execute(
+                "SELECT * FROM memory_conclusion WHERE code = ? AND conclusion_id = ?",
+                (code, conclusion_id),
+            ).fetchone()
+            if current is None:
+                raise MemoryError(f"结论不存在：{conclusion_id}")
+            if old_conclusion != current["statement"]:
+                raise MemoryError("old_conclusion 与档案中的当前结论不一致")
+
+            for ref_table, ref_column, ids, message in (
+                ("memory_fact", "fact_id", fact_evidence, "变化引用了不存在的事实："),
+                ("memory_hypothesis", "hypothesis_id", hypothesis_evidence, "变化引用了不存在的假设："),
+                ("memory_fact", "fact_id", based_facts, "新结论引用了不存在的事实："),
+                ("memory_hypothesis", "hypothesis_id", based_hypos, "新结论引用了不存在的假设："),
+            ):
+                missing = _missing_ids(connection, code, ref_table, ref_column, ids)
+                if missing:
+                    raise MemoryError(message + "、".join(missing))
+
+            change_id = _next_id(connection, code, "memory_change", "change_id", "C")
+            now = _now()
+            if operation == "推翻":
+                new_id = _next_id(connection, code, "memory_conclusion", "conclusion_id", "G")
+                facts = _merge_ids([], based_facts or fact_evidence)
+                hypos = _merge_ids([], based_hypos or hypothesis_evidence)
+                connection.execute(
+                    "INSERT INTO memory_conclusion (code, conclusion_id, title, statement, "
+                    "status, confidence, based_on_fact_ids_json, based_on_hypothesis_ids_json, "
+                    "last_change_id, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, '有效', ?, ?, ?, ?, ?, ?)",
+                    (
+                        code, new_id, new_title, new_conclusion, confidence,
+                        json.dumps(facts, ensure_ascii=False),
+                        json.dumps(hypos, ensure_ascii=False),
+                        change_id, now, now,
+                    ),
+                )
+                connection.execute(
+                    "UPDATE memory_conclusion SET status = '已推翻', last_change_id = ?, "
+                    "updated_at = ? WHERE code = ? AND conclusion_id = ?",
+                    (change_id, now, code, conclusion_id),
+                )
+                from_row = connection.execute(
+                    "SELECT * FROM memory_conclusion WHERE code = ? AND conclusion_id = ?",
+                    (code, conclusion_id),
+                ).fetchone()
+                to_row = connection.execute(
+                    "SELECT * FROM memory_conclusion WHERE code = ? AND conclusion_id = ?",
+                    (code, new_id),
+                ).fetchone()
+            else:
+                facts = _merge_ids(
+                    _load_list(current["based_on_fact_ids_json"]), based_facts + fact_evidence
+                )
+                hypos = _merge_ids(
+                    _load_list(current["based_on_hypothesis_ids_json"]),
+                    based_hypos + hypothesis_evidence,
+                )
+                statement = new_conclusion if operation != "维持" else current["statement"]
+                connection.execute(
+                    "UPDATE memory_conclusion SET statement = ?, "
+                    "based_on_fact_ids_json = ?, based_on_hypothesis_ids_json = ?, "
+                    "last_change_id = ?, updated_at = ? "
+                    "WHERE code = ? AND conclusion_id = ?",
+                    (
+                        statement, json.dumps(facts, ensure_ascii=False),
+                        json.dumps(hypos, ensure_ascii=False), change_id, now,
+                        code, conclusion_id,
+                    ),
+                )
+                from_row = connection.execute(
+                    "SELECT * FROM memory_conclusion WHERE code = ? AND conclusion_id = ?",
+                    (code, conclusion_id),
+                ).fetchone()
+                to_row = from_row
+
+            connection.execute(
+                "INSERT INTO memory_change (code, change_id, from_conclusion_id, "
+                "to_conclusion_id, operation, old_conclusion, new_conclusion, trigger_event, "
+                "trigger_date, evidence_ids_json, reason, impact, review_status, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    code, change_id, from_row["conclusion_id"], to_row["conclusion_id"],
+                    operation, old_conclusion, new_conclusion, trigger_event, trigger_date,
+                    json.dumps(evidence_ids, ensure_ascii=False), reason, impact,
+                    review_status, now,
+                ),
+            )
+            connection.execute(
+                "UPDATE company_memory SET last_reviewed_at = ?, updated_at = ? WHERE code = ?",
+                (now, now, code),
+            )
+            return change_id, from_row, to_row
+
+        change_id, from_row, to_row = self._write(operation_fn)
+        with self._session() as connection:
+            change = _change_row(connection.execute(
+                "SELECT * FROM memory_change WHERE code = ? AND change_id = ?",
+                (code, change_id),
+            ).fetchone())
+            counts = self._counts(connection, code)
+        return {
+            "change": change,
+            "from": _conclusion_row(from_row),
+            "to": _conclusion_row(to_row),
+            "counts": counts,
+        }
+
+    def detail(
+        self, code: str, status: str = "", limit: int | None = None
+    ) -> dict | None:
+        code = _code(code)
+        with self._session() as connection:
+            company_row = connection.execute(
+                "SELECT * FROM company_memory WHERE code = ?", (code,)
+            ).fetchone()
+            if company_row is None:
+                return None
+            sections: dict[str, list[dict]] = {}
+            for section in SECTIONS:
+                table, column, status_column, order = _TABLES[section]
+                clauses = ["code = ?"]
+                params: list[Any] = [code]
+                if status:
+                    clauses.append(f"{status_column} = ?")
+                    params.append(str(status))
+                sql = (
+                    f"SELECT * FROM {table} WHERE {' AND '.join(clauses)} "
+                    f"ORDER BY {order}"
+                )
+                if limit is not None:
+                    sql += " LIMIT ?"
+                    params.append(max(1, int(limit)))
+                rows = connection.execute(sql, params).fetchall()
+                mapper = _row_mapper(section)
+                sections[section] = [mapper(row) for row in rows]
+            company = self._company_summary(connection, company_row)
+        return {"company": company, "counts": company["counts"], **sections}
+
+    def brief(self, code: str, limit: int = 1200) -> str:
+        code = _code(code)
+        with self._session() as connection:
+            company_row = connection.execute(
+                "SELECT * FROM company_memory WHERE code = ?", (code,)
+            ).fetchone()
+            if company_row is None:
+                return "尚无研究档案"
+            reviewed = company_row["last_reviewed_at"]
+            lines = [
+                f"研究档案：{code} {company_row['name']}"
+                f"（最后复核 {reviewed[:10] if reviewed else '尚未复核'}）"
+            ]
+
+            conclusions = connection.execute(
+                "SELECT * FROM memory_conclusion WHERE code = ? AND status = '有效' "
+                "ORDER BY updated_at DESC, id DESC",
+                (code,),
+            ).fetchall()
+            if conclusions:
+                lines.append("当前结论：")
+                for row in conclusions[:5]:
+                    lines.append(
+                        f"{row['conclusion_id']} [{row['status']}] "
+                        f"{row['statement'][:60]}（更新 {row['updated_at'][:10]}）"
+                    )
+                if len(conclusions) > 5:
+                    lines.append(
+                        f"另有 {len(conclusions) - 5} 条，明细用 read_research_memory 读取"
+                    )
+
+            hypotheses = connection.execute(
+                "SELECT * FROM memory_hypothesis WHERE code = ? "
+                "AND status IN ('待验证', '部分支持') "
+                "ORDER BY (next_review_date IS NULL), next_review_date ASC, "
+                "updated_at DESC, id DESC LIMIT 3",
+                (code,),
+            ).fetchall()
+            if hypotheses:
+                lines.append("待复核假设：")
+                for row in hypotheses:
+                    lines.append(
+                        f"{row['hypothesis_id']} {row['statement'][:50]}"
+                        f"（{row['status']}，{row['next_review_date'] or '无日期'}）"
+                    )
+
+            questions = connection.execute(
+                "SELECT * FROM memory_question WHERE code = ? "
+                "AND status IN ('待处理', '调查中') "
+                "ORDER BY CASE importance WHEN '高' THEN 0 WHEN '中' THEN 1 ELSE 2 END, "
+                "last_checked_at ASC, id ASC LIMIT 3",
+                (code,),
+            ).fetchall()
+            if questions:
+                lines.append("未决问题：")
+                for row in questions:
+                    lines.append(
+                        f"{row['question_id']} {row['question'][:50]}"
+                        f"（{row['importance']}，{row['status']}）"
+                    )
+
+            latest_change = connection.execute(
+                "SELECT * FROM memory_change WHERE code = ? "
+                "ORDER BY created_at DESC, id DESC LIMIT 1",
+                (code,),
+            ).fetchone()
+            if latest_change is not None:
+                lines.append(
+                    f"最新变化：{latest_change['change_id']} "
+                    f"{latest_change['trigger_date']} {latest_change['operation']} "
+                    f"{latest_change['from_conclusion_id']}"
+                    f"（{latest_change['trigger_event'][:30]}）"
+                )
+
+            counts = self._counts(connection, code)
+        lines.append(
+            f"计数：事实 {counts['facts']} · 假设 {counts['hypotheses']} · "
+            f"结论 {counts['conclusions']} · 变化 {counts['changes']} · "
+            f"问题 {counts['questions']}；明细用 read_research_memory 读取。"
+        )
+        text = "\n".join(lines)
+        if len(text) > limit:
+            text = text[: max(0, limit - 1)] + "…"
+        return text
+
     def read(
         self,
         code: str,
@@ -844,8 +1180,6 @@ class ResearchMemoryStore:
         code = _code(code)
         if section not in SECTIONS:
             raise MemoryError(f"未知模块：{section}")
-        if section == "changes":
-            raise MemoryError("该模块尚未实现")
         table, column, status_column, order = _TABLES[section]
         mapper = _row_mapper(section)
         with self._session() as connection:
