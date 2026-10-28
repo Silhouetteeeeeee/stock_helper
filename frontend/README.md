@@ -15,7 +15,7 @@
   依据数据由 `GET /api/conversations/{id}/evidence?source_id=...` 从已保存的
   工具消息里取回
 - 启动动画：首屏播放 `assets/boot/1.mp4`（约 8 秒），进度条跟随片子推进，最后 2 秒
-  在应用就绪后溶解进主界面；右下角可开声音，Esc/空格/回车跳过，每个标签页只播一次
+  在应用就绪后溶解进主界面；右下角可开声音，Esc/空格/回车跳过，刷新页面会重新播放
   （`boot.js`，素材来自 MIT 许可的 dsh-boot-animation，见 `assets/boot/LICENSE`）
 - 研究档案页只读，入口在左侧栏和对话栏标题；数据来自 `/api/research/companies`，
   不会从页面写档案。点公司进入详情，五个标签分别是当前结论、已验证事实（按类型

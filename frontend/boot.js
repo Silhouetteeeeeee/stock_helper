@@ -1,30 +1,21 @@
 // 启动动画：短片 + 进度条 + 溶解进主界面。
 // 覆盖层是 index.html 里的静态节点，本脚本只负责播放与退场，不依赖 Vue。
-// 同一标签页只播一次；短片放到最后 2 秒、应用也已就绪时开始溶解，两者都满足才进入。
+// 每次打开或刷新页面都会播放；短片放到最后 2 秒、应用也已就绪时开始溶解。
 (function () {
   "use strict";
 
   var root = document.getElementById("boot");
   if (!root) return;
 
-  var PLAYED_KEY = "bootPlayed";
   var reduced = false;
   try {
     reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   } catch (error) { /* 旧浏览器不支持就当作没有偏好 */ }
 
-  var alreadyPlayed = false;
-  try {
-    alreadyPlayed = sessionStorage.getItem(PLAYED_KEY) === "1";
-  } catch (error) { /* 隐私模式禁用存储时照常播放 */ }
-
-  if (alreadyPlayed || reduced) {
+  if (reduced) {
     root.remove();
     return;
   }
-  try {
-    sessionStorage.setItem(PLAYED_KEY, "1");
-  } catch (error) { /* 记不住就下次再播，不影响本次 */ }
 
   var video = document.getElementById("boot-video");
   var fill = document.getElementById("boot-fill");

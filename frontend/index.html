@@ -6,14 +6,6 @@
 <title>投资助手</title>
 <!-- 改样式或脚本后把 v 加一，避免浏览器继续用旧缓存 -->
 <link rel="stylesheet" href="/styles.css?v=20261029a" />
-<script>
-  // 同一会话已经看过启动动画：在首次绘制前就藏掉覆盖层，避免闪一下
-  try {
-    if (sessionStorage.getItem("bootPlayed") === "1") {
-      document.documentElement.classList.add("boot-skip");
-    }
-  } catch (error) { /* 存储不可用时照常播放 */ }
-</script>
 </head>
 <body>
 <div class="boot" id="boot" role="dialog" aria-label="启动动画">
@@ -467,7 +459,7 @@
 <script src="/assets/vue.global.prod.js"></script>
 <script src="/assets/marked.umd.js"></script>
 <script src="/assets/purify.min.js"></script>
-<script src="/boot.js?v=20261029b"></script>
+<script src="/boot.js?v=20261029c"></script>
 <script src="/app.js?v=20261029a"></script>
 </body>
 </html>
