@@ -1094,5 +1094,7 @@ createApp({
     if (left) this.$refs.leftPane.open(left);
     const right = Number(localStorage.getItem(SPLIT_KEY));
     if (right) this.openInRight(right);
+    // 启动动画等这个信号；页面没有动画时它只是一个空事件
+    window.dispatchEvent(new Event("app-ready"));
   },
 }).mount("#app");
