@@ -15,6 +15,7 @@ import time
 import unicodedata
 from contextlib import contextmanager
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -227,6 +228,21 @@ def _normalize_content(value: str) -> str:
     return re.sub(r"\s+", "", normalized).lower()
 
 
+def _normalize_metric_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return _normalize_content(str(value))
+    if isinstance(value, (int, float)):
+        try:
+            return format(Decimal(str(value)).normalize(), "f")
+        except InvalidOperation:
+            return _normalize_content(str(value))
+    text = str(value)
+    try:
+        return format(Decimal(text.strip().replace(",", "")).normalize(), "f")
+    except InvalidOperation:
+        return _normalize_content(text)
+
+
 def _validate_fact(record: dict) -> dict:
     if not isinstance(record, dict):
         raise MemoryError("record 必须是对象")
@@ -276,16 +292,22 @@ def _validate_fact(record: dict) -> dict:
 
 
 def _dedupe_key(fact: dict) -> str:
+    fact_type = _normalize_content(fact["fact_type"])
+    report_period = _normalize_content(fact["report_period"])
     if fact["metrics"]:
         parts = sorted(
-            f"{item.get('name', '')}|{item.get('value', '')}|{item.get('unit', '')}"
+            "|".join((
+                _normalize_content(str(item.get("name", ""))),
+                _normalize_metric_value(item.get("value", "")),
+                _normalize_content(str(item.get("unit", ""))),
+            ))
             for item in fact["metrics"]
         )
-        raw = "|".join((fact["fact_type"], fact["report_period"], *parts))
+        raw = "|".join((fact_type, report_period, *parts))
     else:
         raw = "|".join((
-            fact["fact_type"],
-            fact["report_period"],
+            fact_type,
+            report_period,
             _normalize_content(fact["content"]),
         ))
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
@@ -952,6 +974,10 @@ class ResearchMemoryStore:
             ).fetchone()
             if current is None:
                 raise MemoryError(f"结论不存在：{conclusion_id}")
+            if current["status"] != "有效":
+                raise MemoryError(
+                    f"结论已推翻，不能继续变更：{conclusion_id}，请在当前有效结论上记录"
+                )
             if old_conclusion != current["statement"]:
                 raise MemoryError("old_conclusion 与档案中的当前结论不一致")
 

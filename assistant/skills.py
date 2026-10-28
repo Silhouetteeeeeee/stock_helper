@@ -606,8 +606,10 @@ RESEARCH_MEMORY = Skill(
 - 更新状态用 update_research_record；不要用 append 重写同一份结论。
 - 写入失败时明确告诉用户"档案未写入，原因……"，不要当成已保存。
 
+回答"结论有没有变化"之前，必须先用 read_research_memory 读取 conclusions 和 changes，不能只凭摘要作答；摘要可能被截断，且只带最近一条变化，涉及摘要未展示的记录时先读档案再看。
+
 回答"结论有没有变化"的顺序：
-1. 上次复核时间与当前结论基线（read_research_memory / list_research_memory）。
+1. 上次复核时间与当前结论基线（read_research_memory conclusions）。
 2. 复核以来新增的事实与证据。
 3. 逐条对照：哪些结论维持、哪些补充、哪些修正、哪些推翻，以及触发事件。
 4. 仍未解决的问题与下一步要补的证据。

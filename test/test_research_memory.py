@@ -82,6 +82,26 @@ def test_fact_dedupe_and_multi_metric_key() -> None:
         result = store.append("605499", "facts", again)
         assert result["created"] is False
 
+        # 指标事实：类型/报告期的空白和全半角差异也要归一化
+        period_variant = dict(FACT)
+        period_variant["fact_type"] = " 盈利能力 "
+        period_variant["report_period"] = "2025年度"
+        assert store.append("605499", "facts", period_variant)["created"] is False
+
+        # 指标事实：数值的字符串/浮点写法不同也视为同一条
+        value_variant = dict(FACT)
+        value_variant["metrics"] = [
+            {"name": " 营业收入 ", "value": "208.750", "unit": " 亿元 ", "yoy": 31.8}
+        ]
+        assert store.append("605499", "facts", value_variant)["created"] is False
+
+        # 归一化不能把不同的数值合并
+        different = dict(FACT)
+        different["metrics"] = [
+            {"name": "营业收入", "value": "208.76", "unit": "亿元", "yoy": 31.8}
+        ]
+        assert store.append("605499", "facts", different)["created"] is True
+
 
 def test_fact_requires_source_and_period() -> None:
     with tempfile.TemporaryDirectory() as folder:
@@ -373,6 +393,41 @@ def test_changes_are_append_only() -> None:
         connection.close()
 
 
+def test_change_rejects_overturned_conclusion() -> None:
+    with tempfile.TemporaryDirectory() as folder:
+        store = fresh_store(folder)
+        baseline(store)
+        overturned = store.record_change("605499", change_payload(
+            operation="推翻",
+            new_conclusion="增长由单一新品驱动",
+            new_title="增长来源（修正）",
+            trigger_event="新品收入占比超过 60%",
+        ))
+        assert overturned["from"]["status"] == "已推翻"
+        assert overturned["to"]["conclusion_id"] == "G002"
+
+        for operation in ("补充", "修正", "维持", "推翻"):
+            payload = change_payload(
+                operation=operation,
+                new_conclusion="另一个说法",
+                new_title="增长来源",
+                trigger_event="复核旧结论",
+            )
+            if operation == "维持":
+                payload["new_conclusion"] = payload["old_conclusion"]
+            try:
+                store.record_change("605499", payload)
+            except MemoryError as error:
+                assert "已推翻" in str(error)
+            else:
+                raise AssertionError(f"已推翻的结论不允许 {operation}")
+
+        archived = store.read("605499", "conclusions", "G001")["records"][0]
+        assert archived["statement"] == "增长主要依赖核心单品"
+        active = store.read("605499", "conclusions", "G002")["records"][0]
+        assert active["statement"] == "增长由单一新品驱动"
+
+
 def test_last_reviewed_only_moves_on_change() -> None:
     with tempfile.TemporaryDirectory() as folder:
         store = fresh_store(folder)
@@ -422,6 +477,7 @@ def main() -> None:
     test_record_change_operations()
     test_record_change_validation()
     test_changes_are_append_only()
+    test_change_rejects_overturned_conclusion()
     test_last_reviewed_only_moves_on_change()
     test_brief_order_and_cap()
     print("PASS")

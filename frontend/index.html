@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>投资助手</title>
 <!-- 改样式或脚本后把 v 加一，避免浏览器继续用旧缓存 -->
-<link rel="stylesheet" href="/styles.css?v=20261027e" />
+<link rel="stylesheet" href="/styles.css?v=20261028a" />
 </head>
 <body>
 <div id="app" v-cloak>
@@ -83,6 +83,8 @@
     </div>
 
     <section class="archive-view" v-if="archiveOpen">
+      <p class="archive-status" v-if="archiveLoading">正在读取档案…</p>
+      <p class="archive-status archive-error" v-else-if="archiveError">{{ archiveError }}</p>
       <template v-if="!archiveDetail">
         <header class="archive-head">
           <button class="archive-back" @click="closeArchive">← 返回对话</button>
@@ -123,9 +125,7 @@
         </nav>
 
         <div class="archive-body">
-          <p class="archive-empty" v-if="archiveLoading">正在读取档案…</p>
-          <p class="archive-empty" v-else-if="archiveError">{{ archiveError }}</p>
-          <template v-else>
+          <template v-if="!archiveLoading && !archiveError">
             <section class="archive-section" v-show="archiveSection === 'conclusions'">
               <div class="archive-card" v-for="item in archiveConclusions" :key="item.conclusion_id">
                 <div class="archive-card-head">
@@ -449,6 +449,6 @@
 <script src="/assets/vue.global.prod.js"></script>
 <script src="/assets/marked.umd.js"></script>
 <script src="/assets/purify.min.js"></script>
-<script src="/app.js?v=20261027e"></script>
+<script src="/app.js?v=20261028a"></script>
 </body>
 </html>

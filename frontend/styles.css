@@ -239,6 +239,15 @@ a { color: #8fb4ff; }
   background: var(--bg);
   overflow: hidden;
 }
+.archive-status {
+  margin: 10px 20px 0;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--dim);
+  font-size: 12px;
+}
+.archive-status.archive-error { color: #e59a95; background: rgba(224, 108, 100, 0.1); }
 .archive-head {
   display: flex;
   align-items: center;

@@ -234,6 +234,8 @@ def test_research_memory_skill() -> None:
     text = skill.instructions
     for phrase in ("已验证事实", "待验证假设", "结论变化", "未决问题", "维持", "证伪"):
         assert phrase in text, phrase
+    for phrase in ("conclusions", "changes", "不能只凭摘要"):
+        assert phrase in text, phrase
 
 
 def main() -> None:

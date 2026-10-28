@@ -783,6 +783,7 @@ createApp({
         this.archiveCode = null;
         this.archiveDetail = null;
         this.archiveError = "";
+        this.archiveLoading = false;
       }
     },
     closeArchive() {
@@ -790,30 +791,35 @@ createApp({
       this.archiveCode = null;
       this.archiveDetail = null;
       this.archiveError = "";
+      this.archiveLoading = false;
     },
     showArchiveList() {
       this.archiveDetail = null;
       this.archiveCode = null;
       this.archiveError = "";
+      this.archiveLoading = false;
     },
     async loadArchiveDetail(code) {
+      const requested = code;
       this.archiveCode = code;
+      this.archiveDetail = null;
       this.archiveLoading = true;
       this.archiveError = "";
       try {
         const response = await fetch(`/api/research/companies/${encodeURIComponent(code)}`);
+        if (this.archiveCode !== requested) return;
         if (!response.ok) {
-          this.archiveDetail = null;
           this.archiveError = "档案读取失败，请稍后重试";
           return;
         }
         this.archiveDetail = await response.json();
         this.archiveSection = "conclusions";
       } catch (error) {
-        this.archiveDetail = null;
-        this.archiveError = "档案读取失败，请稍后重试";
+        if (this.archiveCode === requested) {
+          this.archiveError = "档案读取失败，请稍后重试";
+        }
       } finally {
-        this.archiveLoading = false;
+        if (this.archiveCode === requested) this.archiveLoading = false;
       }
     },
     badgeClass(status) {
