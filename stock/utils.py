@@ -194,12 +194,28 @@ def get_sina_current_stock_info_list(codes: list[str], ) -> list[SinaStockQuote]
 
 @lru_cache(maxsize=1)
 def get_trade_dates() -> frozenset[date]:
-    """获取并缓存 A 股交易日历。"""
-    df = ak.tool_trade_date_hist_sina()
-    return frozenset(
-        date.fromisoformat(str(d)[:10])
-        for d in df["trade_date"]
-    )
+    """获取并缓存 A 股交易日历。
+
+    直接请求新浪的日历文件并显式禁用代理：akshare 内部用 requests 默认
+    读取系统代理，本机残留的失效代理（如 127.0.0.1:51926）会让行情发布
+    在判断交易时段时直接抛 ProxyError。
+    """
+    from akshare.stock.cons import hk_js_decode
+    import py_mini_racer
+
+    url = "https://finance.sina.com.cn/realstock/company/klc_td_sh.txt"
+    resp = requests.get(url, proxies={"http": None, "https": None}, timeout=10)
+    resp.raise_for_status()
+    js_code = py_mini_racer.MiniRacer()
+    js_code.eval(hk_js_decode)
+    raw = resp.text.split("=")[1].split(";")[0].replace('"', "")
+    dates = {
+        date.fromisoformat(str(item)[:10])
+        for item in js_code.call("d", raw)
+    }
+    # 新浪日历缺这一天，但它是交易日（与 akshare 的修正保持一致）
+    dates.add(date(1992, 5, 4))
+    return frozenset(dates)
 
 
 def is_trading_day(check_date: date | None = None) -> bool:
