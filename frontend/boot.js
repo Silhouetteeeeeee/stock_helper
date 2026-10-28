@@ -1,6 +1,6 @@
 // 启动动画：短片 + 进度条 + 溶解进主界面。
 // 覆盖层是 index.html 里的静态节点，本脚本只负责播放与退场，不依赖 Vue。
-// 同一标签页只播一次；数据就绪后 0.6 秒开始 2 秒淡出，最长 8 秒兜底。
+// 同一标签页只播一次；短片放到最后 2 秒、应用也已就绪时开始溶解，两者都满足才进入。
 (function () {
   "use strict";
 
@@ -31,22 +31,29 @@
   var hint = document.getElementById("boot-hint");
   var sound = document.getElementById("boot-sound");
   var FADE_MS = 2000;
-  var READY_DELAY_MS = 600;
-  var HOLD_LIMIT_MS = 8000;
+  // 影片卡住或自动播放被拒时的兜底：装饰性画面不能永远挡着应用。
+  var HOLD_LIMIT_MS = 12000;
+  // 画面连续这么久不推进，就当作已经播完，免得网络卡在半路一直等下去。
+  var STALL_LIMIT_MS = 5000;
+  // 短于两次溶解时长的片子来不及做尾部溶解，只能等它自己放完。
+  var TAIL_MIN_S = (FADE_MS * 2) / 1000;
   var leaving = false;
-  var ready = false;
+  var appReady = false;
+  var clipDone = false;
   var progressStarted = performance.now();
 
   function showVideo() {
     video.classList.add("is-shown");
   }
 
-  video.src = "/assets/boot/3.mp4";
+  video.src = "/assets/boot/1.mp4";
   video.muted = true;
   var attempt = video.play();
   if (attempt && typeof attempt.catch === "function") {
     attempt.catch(function () {
-      // 自动播放被拒时保留深色背景与进度条，不挡路
+      // 自动播放被拒时保留深色背景与进度条，不挡路；不再等这段片子。
+      clipDone = true;
+      maybeEnter();
     });
   }
   video.addEventListener("playing", showVideo);
@@ -56,14 +63,33 @@
     fill.style.width = value.toFixed(1) + "%";
   }
 
-  function tick() {
-    if (leaving) return;
-    var elapsed = performance.now() - progressStarted;
-    if (ready) {
-      setWidth(100);
+  function clipDuration() {
+    var duration = video.duration;
+    return isFinite(duration) && duration > 0 ? duration : 0;
+  }
+
+  function maybeEnter() {
+    if (leaving || !appReady) return;
+    var duration = clipDuration();
+    if (clipDone) {
+      enter();
       return;
     }
-    setWidth(Math.min(85, 8 + (elapsed / 3000) * 77));
+    if (duration < TAIL_MIN_S) return;
+    if (video.currentTime >= duration - FADE_MS / 1000) enter();
+  }
+
+  function tick() {
+    if (leaving) return;
+    var duration = clipDuration();
+    if (duration > 0) {
+      // 进度条跟着片子走：片子放完时正好到顶。
+      setWidth(Math.min(99, 8 + (video.currentTime / duration) * 91));
+    } else {
+      var elapsed = performance.now() - progressStarted;
+      setWidth(Math.min(85, 8 + (elapsed / 3000) * 77));
+    }
+    maybeEnter();
     requestAnimationFrame(tick);
   }
   requestAnimationFrame(tick);
@@ -84,11 +110,10 @@
     }, FADE_MS + 120);
   }
 
-  function markReady() {
-    if (ready) return;
-    ready = true;
-    setWidth(100);
-    setTimeout(enter, READY_DELAY_MS);
+  function onReady() {
+    appReady = true;
+    renderSound(false);
+    maybeEnter();
   }
 
   function onKey(event) {
@@ -98,13 +123,39 @@
     }
   }
 
-  window.addEventListener("app-ready", markReady, { once: true });
+  video.addEventListener("ended", function () {
+    clipDone = true;
+    setWidth(100);
+    if (!appReady && hint) hint.textContent = "应用启动较慢，就绪后自动进入";
+    maybeEnter();
+  });
+
+  window.addEventListener("app-ready", onReady, { once: true });
   window.addEventListener("keydown", onKey);
+
+  // 兜底：片子再长、网络再慢，也不能超过这个时间还挡着应用。
   setTimeout(function () {
-    if (ready) return;
-    if (hint) hint.textContent = "应用启动较慢，正在进入…";
-    markReady();
+    if (leaving) return;
+    if (hint && !appReady) hint.textContent = "应用启动较慢，正在进入…";
+    appReady = true;
+    enter();
   }, HOLD_LIMIT_MS);
+
+  // 片子停在半路（网络断流、解码卡住）时不再等它的结尾事件。
+  var lastMediaTime = 0;
+  var lastAdvanceAt = performance.now();
+  setInterval(function () {
+    if (leaving || clipDone) return;
+    if (video.currentTime > lastMediaTime + 0.05) {
+      lastMediaTime = video.currentTime;
+      lastAdvanceAt = performance.now();
+      return;
+    }
+    if (performance.now() - lastAdvanceAt >= STALL_LIMIT_MS) {
+      clipDone = true;
+      maybeEnter();
+    }
+  }, 1000);
 
   function renderSound(refused) {
     if (!sound || !video) return;
